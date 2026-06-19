@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Local secrets / config (NEVER commit real keys)
+.env
+.env.*
+config.local.js
+secrets.json
+
+# Build / temp
+dist/
+.cache/
+*.tmp

@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>AI 结构题批改器 · Structured Question Grader</title>
+    <meta name="description" content="上传 CAIE 结构题答卷 PDF，AI 逐题逐得分点比对 Mark Scheme 精准批改。纯前端，自带密钥配置。">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="css/style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+</head>
+<body>
+    <header class="site-header">
+        <div class="brand"><i class="fas fa-robot"></i> AI SQ Grader</div>
+        <button id="settingsBtn" class="header-btn" title="API 配置"><i class="fas fa-gear"></i> 配置</button>
+    </header>
+
+    <main class="page essay-grader-page">
+        <section class="intro blog-hero">
+            <div class="hero-copy">
+                <p class="eyebrow">AI Structured Q Grader</p>
+                <h1>结构题 AI 批改</h1>
+                <p>上传你的结构题答卷，AI 逐题逐得分点比对官方 Mark Scheme，明确告诉你每个点是否得分。纯前端运行，密钥保存在你自己的浏览器里。</p>
+            </div>
+            <div class="hero-art" aria-hidden="true">
+                <span class="hero-badge" style="background: linear-gradient(135deg,#fd79a8,#e84393);">AI Powered</span>
+            </div>
+        </section>
+
+        <div id="configBanner" class="config-banner" style="display:none;">
+            <i class="fas fa-triangle-exclamation"></i>
+            还没有配置 AI 接口。请先点击右上角 <strong>配置</strong> 按钮填入你自己的 API 信息。
+            <button class="link-btn" id="bannerConfigBtn">立即配置</button>
+        </div>
+
+        <!-- Pipeline -->
+        <div class="pipeline-bar glass-panel">
+            <div class="pipeline-step active" id="step1"><i class="fas fa-list-ol"></i><span>选择试卷</span></div>
+            <div class="pipeline-arrow"><i class="fas fa-chevron-right"></i></div>
+            <div class="pipeline-step" id="step2"><i class="fas fa-file-upload"></i><span>上传答卷</span></div>
+            <div class="pipeline-arrow"><i class="fas fa-chevron-right"></i></div>
+            <div class="pipeline-step" id="step3"><i class="fas fa-download"></i><span>准备 MS</span></div>
+            <div class="pipeline-arrow"><i class="fas fa-chevron-right"></i></div>
+            <div class="pipeline-step" id="step4"><i class="fas fa-robot"></i><span>AI 解析</span></div>
+            <div class="pipeline-arrow"><i class="fas fa-chevron-right"></i></div>
+            <div class="pipeline-step" id="step5"><i class="fas fa-chart-bar"></i><span>输出报告</span></div>
+        </div>
+
+        <!-- Section 1: Paper Selection -->
+        <section class="grader-card glass-panel" id="sectionSelect">
+            <h2><i class="fas fa-book-open"></i> 第一步：选择你要批改的试卷</h2>
+            <p class="section-hint">配置了 PDF 下载代理时，系统会自动获取该试卷的 MS；否则请在下方手动上传 MS。建议选择结构题（如 Paper 4 / Paper 5）。</p>
+            <form id="paperSelectForm" class="paper-form">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="eg-level">学习阶段</label>
+                        <select id="eg-level" required>
+                            <option value="igcse">IGCSE</option>
+                            <option value="alevel" selected>A-Level</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="eg-subject">科目</label>
+                        <select id="eg-subject" required></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="eg-year">年份</label>
+                        <select id="eg-year" required></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="eg-season">考季</label>
+                        <select id="eg-season" required>
+                            <option value="m">March (Spring)</option>
+                            <option value="s" selected>May/June (Summer)</option>
+                            <option value="w">Oct/Nov (Winter)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="eg-paper">试卷 &amp; 变体</label>
+                        <select id="eg-paper" required></select>
+                    </div>
+                    <div class="form-group full">
+                        <label for="eg-api">AI 线路</label>
+                        <select id="eg-api" required></select>
+                    </div>
+                    <div class="form-group full deepseek-box">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="eg-use-deepseek">
+                            <strong>使用 DeepSeek 线路处理纯文本 MS（需在配置中填写 DeepSeek 线路）</strong>
+                        </label>
+                    </div>
+                </div>
+                <div class="form-submit">
+                    <button type="submit" class="btn-generate" id="confirmPaperBtn">
+                        <i class="fas fa-check-circle"></i> 确认试卷，进行下一步
+                    </button>
+                </div>
+            </form>
+        </section>
+
+        <!-- Manual MS Upload -->
+        <section class="grader-card glass-panel ms-upload-section" id="sectionMsUpload">
+            <h2><i class="fas fa-file-alt" style="color:#fdcb6e;"></i> Mark Scheme（推荐手动上传）</h2>
+            <p class="section-hint">如果未配置下载代理，或自动下载失败，请在此上传 Mark Scheme PDF。可从 <a href="https://bestexamhelp.com" target="_blank" rel="noopener">BestExamHelp</a> 或 <a href="https://pastpapers.co" target="_blank" rel="noopener">PastPapers.co</a> 手动下载。</p>
+            <div class="ms-upload-row">
+                <label class="ms-upload-label" for="manualMsInput">
+                    <i class="fas fa-cloud-upload-alt"></i>
+                    <span id="manualMsStatus">点击或拖入 MS PDF 文件</span>
+                </label>
+                <input type="file" id="manualMsInput" accept=".pdf">
+            </div>
+        </section>
+
+        <!-- Section 2: Upload Answer Sheet -->
+        <section class="grader-card glass-panel locked" id="sectionUpload">
+            <h2><i class="fas fa-file-upload"></i> 第二步：上传你的答卷</h2>
+            <p class="section-hint">支持 PDF 文件（推荐）或多张图片（JPG/PNG）。如果是拍照，请尽量保证清晰、无反光。</p>
+            <div class="upload-tabs">
+                <button type="button" class="tab-btn active" id="tabPdf" onclick="switchTab('pdf')"><i class="fas fa-file-pdf"></i> 上传 PDF</button>
+                <button type="button" class="tab-btn" id="tabImages" onclick="switchTab('images')"><i class="fas fa-images"></i> 上传多张照片</button>
+            </div>
+            <div id="tabContentPdf" class="tab-content">
+                <div class="dropzone" id="pdfDropzone">
+                    <i class="fas fa-cloud-upload-alt dropzone-icon"></i>
+                    <p>拖放 PDF 到此处，或点击选择</p>
+                    <input type="file" id="pdfInput" accept=".pdf" hidden>
+                    <button type="button" class="btn-upload" onclick="document.getElementById('pdfInput').click()">选择 PDF 文件</button>
+                </div>
+                <div id="pdfPreviewInfo" class="upload-info" style="display:none;"></div>
+            </div>
+            <div id="tabContentImages" class="tab-content" style="display:none;">
+                <div class="dropzone" id="imgDropzone">
+                    <i class="fas fa-images dropzone-icon"></i>
+                    <p>拖放多张图片到此处，或点击选择（顺序即为页面顺序）</p>
+                    <input type="file" id="imgInput" accept="image/*" multiple hidden>
+                    <button type="button" class="btn-upload" onclick="document.getElementById('imgInput').click()">选择图片文件</button>
+                </div>
+                <div id="imgPreviewArea" class="img-preview-grid"></div>
+            </div>
+            <div class="form-submit" style="margin-top:1.5rem;">
+                <button class="btn-generate" id="startGradingBtn" disabled>
+                    <i class="fas fa-magic"></i> 开始 AI 批改
+                </button>
+            </div>
+        </section>
+
+        <!-- Section 3: Progress -->
+        <section class="grader-card glass-panel" id="sectionProgress" style="display:none;">
+            <h2><i class="fas fa-spinner fa-spin" id="progressIcon"></i> <span id="progressTitle">正在处理...</span></h2>
+            <div class="progress-log" id="progressLog"></div>
+            <div class="progress-bar-wrap"><div class="progress-bar-fill" id="progressBarFill" style="width:0%"></div></div>
+        </section>
+
+        <!-- Section 4: Results -->
+        <section class="grader-card glass-panel" id="sectionResults" style="display:none;">
+            <div class="results-header">
+                <h2><i class="fas fa-chart-pie"></i> 最终批改报告</h2>
+                <div class="score-summary">
+                    <div class="score-box"><span class="score-label">预计得分</span><span class="score-val" id="totalScore">-</span></div>
+                    <div class="score-box"><span class="score-label">满分</span><span class="score-val" id="maxScore">-</span></div>
+                    <div class="score-box"><span class="score-label">得分率</span><span class="score-val" id="scoreRate">-</span></div>
+                </div>
+            </div>
+            <div class="legend-row">
+                <span class="badge badge-correct">明确正确</span>
+                <span class="badge badge-possible">疑似正确</span>
+                <span class="badge badge-wrong">错误</span>
+                <span class="badge badge-extra">MS之外</span>
+            </div>
+            <div id="resultsContainer"></div>
+            <div class="disclaimer-note">
+                <i class="fas fa-exclamation-triangle"></i> 本报告由 AI 自动生成，仅供参考。"疑似正确"部分建议与老师再次确认。最终成绩请以官方结果为准。
+            </div>
+        </section>
+    </main>
+
+    <footer class="site-footer">
+        <p>纯前端开源项目 · 你的 API 密钥仅保存在本地浏览器 (localStorage)，不会上传到任何服务器。</p>
+    </footer>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="modal-backdrop" style="display:none;">
+        <div class="modal-content glass-panel">
+            <h3><i class="fas fa-gear"></i> API 接口配置</h3>
+            <p class="modal-desc">本工具不内置任何密钥。请填入你自己的 <strong>OpenAI 兼容</strong> 接口信息。结构题批改需要支持视觉的模型来识别手写答卷。配置仅保存在本地浏览器。</p>
+
+            <div class="line-config" data-line="line1">
+                <h4>线路 1（默认 · 需支持视觉）</h4>
+                <div class="form-group"><label>显示名称</label><input type="text" data-field="label" placeholder="例如：默认线路 (GPT-4o)"></div>
+                <div class="form-group"><label>API Base URL</label><input type="text" data-field="baseUrl" placeholder="https://api.openai.com/v1"></div>
+                <div class="form-group"><label>API Key</label><input type="password" data-field="apiKey" placeholder="sk-..."></div>
+                <div class="form-group"><label>模型名称 (Model)</label><input type="text" data-field="model" placeholder="gpt-4o"></div>
+            </div>
+
+            <div class="line-config" data-line="line2">
+                <h4>线路 2（备用 · 可留空）</h4>
+                <div class="form-group"><label>显示名称</label><input type="text" data-field="label" placeholder="例如：备用线路 (Gemini)"></div>
+                <div class="form-group"><label>API Base URL</label><input type="text" data-field="baseUrl" placeholder="https://..."></div>
+                <div class="form-group"><label>API Key</label><input type="password" data-field="apiKey" placeholder="sk-..."></div>
+                <div class="form-group"><label>模型名称 (Model)</label><input type="text" data-field="model" placeholder="gemini-1.5-pro"></div>
+            </div>
+
+            <div class="line-config" data-line="deepseek">
+                <h4>DeepSeek 线路（处理纯文本 MS · 可留空）</h4>
+                <div class="form-group"><label>API Base URL</label><input type="text" data-field="baseUrl" placeholder="https://api.deepseek.com/v1"></div>
+                <div class="form-group"><label>API Key</label><input type="password" data-field="apiKey" placeholder="sk-..."></div>
+                <div class="form-group"><label>模型名称 (Model)</label><input type="text" data-field="model" placeholder="deepseek-chat"></div>
+            </div>
+
+            <div class="form-group">
+                <label>PDF 下载代理 URL（可选）</label>
+                <input type="text" id="cfg-proxyUrl" placeholder="https://your-proxy.example.com/proxy.php?url=">
+                <small class="field-hint">用于自动下载官方 MS 绕过跨域。留空则需手动上传 MS。代理需将目标 URL 拼接在该地址后。</small>
+            </div>
+
+            <div class="modal-actions">
+                <button class="btn-secondary" id="cfgCancelBtn">取消</button>
+                <button class="btn-primary" id="cfgSaveBtn">保存配置</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/core.js"></script>
+    <script src="js/config.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

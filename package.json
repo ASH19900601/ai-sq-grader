@@ -1,0 +1,9 @@
+{
+  "name": "ai-sq-grader",
+  "version": "1.0.0",
+  "description": "结构题 AI 批改器（纯前端）",
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "MIT"
+}
