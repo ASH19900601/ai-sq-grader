@@ -1,9 +1,10 @@
 {
   "name": "ai-sq-grader",
-  "version": "1.0.0",
-  "description": "结构题 AI 批改器（纯前端）",
+  "version": "2.0.0",
+  "description": "结合 QP、原始图像与复杂 MS 规则的结构题 AI 批改器",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "check": "node --check js/core.js && node --check js/config.js && node --check js/app.js"
   },
   "license": "MIT"
 }

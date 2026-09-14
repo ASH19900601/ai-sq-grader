@@ -1,88 +1,117 @@
 # AI SQ Grader · 结构题 AI 批改器
 
-> 上传 CAIE / IGCSE / A-Level 结构题（Structured Question）答卷，AI 自动逐题、逐得分点比对官方 Mark Scheme，明确告诉你每个点是否得分。**纯前端、零后端、密钥本地存储。**
+纯前端的 CAIE / IGCSE / A-Level 结构题辅助批改工具。它同时读取 Question Paper（QP）、Mark Scheme（MS）和学生答卷，以题干、原始页面图像及结构化评分规则生成逐点报告。
 
-![status](https://img.shields.io/badge/type-static%20site-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![stack](https://img.shields.io/badge/stack-HTML%2FCSS%2FJS-orange)
+> AI 结果仅供练习与复核，不能代替考试局或教师的正式评分。
 
-## ✨ 功能特性
+## 主要能力
 
-5 步流水线：**选择试卷 → 上传答卷 → 准备 MS → AI 解析 → AI 比对 → 输出报告**
+- 扫描 PDF、拍照 PDF、低文字量页面和手绘图页会保留为图像；不再因缺少文本层被当作空白页。
+- QP 会被解析并进入最终评分；图表题同时向最终视觉模型提供 QP 与答卷原图，OCR 文字只作索引。
+- MS 结构支持 M/A/B/SC/FT、依赖分、follow-through、`any N from`/共享组上限、替代路线、`not from wrong working` 和 `ignore subsequent working`。
+- 得分点按 `point_id` 去重，并在得分点组上限和题目满分两层封顶，预计得分不会超过满分。
+- MS、QP、OCR 和逐题评分均有固定并发上限。API 支持超时、429 `Retry-After`、指数退避和取消。
+- MS/QP/OCR 的局部解析失败会终止流程，不生成貌似完整的报告；逐题模型失败显示“未评估”，不记为学生答错，也不计算得分率。
+- 更改学习阶段、科目、年份、考季或试卷后，会取消当前任务并清除旧 QP、MS、答卷和报告。
+- 年份列表自动包含当前年份；目录补充了 AS 科学 Paper 2 与 9709 Paper 1–6 等常用组件。
+- PDF.js 和 Font Awesome 已随项目打包，页面不再执行第三方 CDN 脚本，并设置了基础 CSP。
 
-- 🧠 **三段式 AI 批改**：
-  1. **解析 Mark Scheme**：把 MS 拆解成结构化得分点（含 OR 备选答案）；
-  2. **识别答卷**：作为 OCR 专家逐页识别学生手写答案，连画图题也用文字描述；
-  3. **逐点比对**：对每个得分点给出「明确正确 / 疑似正确 / 错误 / MS之外」四态判定与简短理由。
-- 📄 **智能 PDF 处理**：自动区分纯文本页与图像页，自动裁剪封面、空白页、评分规则页。
-- ⚡ **并发加速**：MS 解析、答卷识别、逐题比对均并发执行。
-- 🛟 **健壮性**：内置多级 JSON 抢救逻辑，能从被截断的模型输出中救回有效结果。
-- 🧩 **可选 DeepSeek 线路**：当 MS 为纯文本时，可路由到单独配置的 DeepSeek 线路处理。
-- 📊 **得分报告**：逐题展示得分点状态、预计得分与得分率。
-- 🔐 **隐私优先**：不内置任何 API Key，密钥仅保存在浏览器 `localStorage`。
+## 运行
 
-## 🚀 快速开始
-
-纯静态网站，无需构建、无需后端。
+无需构建，也没有运行时 npm 依赖：
 
 ```bash
-python -m http.server 8080
-# 或 npx serve .
+python3 -m http.server 8080
 ```
 
-浏览器打开 `http://localhost:8080`。推荐用本地服务器而非直接双击（`file://` 下 `fetch` 受限）。
+打开 `http://localhost:8080`。不要直接双击 `index.html`，因为 `file://` 环境会限制 worker 和网络请求。
 
-### 部署到 GitHub Pages
+操作顺序：
 
-推送到 GitHub，仓库 **Settings → Pages** 选择主分支根目录即可。
+1. 配置视觉模型 API。
+2. 选择并确认试卷。
+3. 手动上传匹配的 QP 与 MS，或配置代理自动下载。
+4. 上传答卷 PDF/图片并开始批改。
+5. 若报告出现“未评估”，重试对应流程，不要把当前下限分数当作最终成绩。
 
-## ⚙️ 配置 AI 接口
+## API 兼容范围
 
-首次打开会自动弹出「API 配置」窗口（也可点右上角 **配置**）。兼容任何 **OpenAI 风格** 的 `/chat/completions` 接口，可配置三条线路：
+“OpenAI 兼容”在本项目中明确指同时支持：
 
-| 线路 | 用途 | 要求 |
-| --- | --- | --- |
-| 线路 1（默认） | 解析 MS、识别手写答卷、比对 | **必填，需支持视觉(vision)的多模态模型**，如 `gpt-4o` |
-| 线路 2（备用） | 同上，可在主界面切换 | 可选 |
-| DeepSeek | 处理纯文本 MS（勾选开关后生效） | 可选，如 `deepseek-chat` |
+- `/chat/completions`；
+- `response_format: {"type":"json_object"}`；
+- 多模态 `image_url`；
+- Base64 Data URL 图片；
+- `max_tokens`。
 
-每条线路需填写 **Base URL**（不含 `/chat/completions`）、**API Key**、**模型名称**。
+只兼容基础文本 Chat Completions 的服务无法完成视觉批改。DeepSeek 线路仅可用于纯文本 MS 的第一阶段解析；最终判分始终使用选中的视觉线路。
 
-> ⚠️ 由于需要识别手写答卷，线路 1/2 必须是支持图片输入的多模态模型。
+## API Key 与隐私
 
-### 关于「PDF 下载代理」（可选）
+- Key 必然会作为 `Authorization` 发送到你配置的 AI 服务商；不会发送给本项目作者，因为本项目没有自有批改后端。
+- 默认 Key 只写入 `sessionStorage`，通常在关闭标签页后清除。
+- 只有主动勾选“跨会话记住 API Key”时才写入 `localStorage`。
+- 旧版 `localStorage` 配置会自动迁移到当前会话并从旧存储项中清除。
+- 纯前端无法让密钥对同源脚本或具备页面权限的浏览器扩展绝对保密；敏感或高额度 Key 应设置额度、来源和权限限制。
 
-浏览器跨域限制无法直接抓取第三方题库 PDF。若想用「自动下载官方 MS」，需自备 CORS 代理并在配置中填写其地址（程序会把目标 URL `encodeURIComponent` 后拼接在末尾）。仓库 `proxy.example.php` 提供可自部署的最小示例。**不配置也能用——直接手动上传 MS 即可。**
+## 可选 PDF 代理
 
-## 📁 目录结构
+`proxy.example.php` 是加固后的部署示例，需要 PHP 8.1+ 与 cURL 扩展。它包含：
 
+- 仅 HTTPS/443 与域名白名单；
+- 初始 URL 和每次重定向重新校验；
+- DNS 解析后拒绝私网/保留地址，并把 cURL 固定到已校验 IP；
+- 最多 3 次手动重定向；
+- 下载大小、连接时间和总时间上限；
+- 每 IP 每分钟限流；
+- 可选共享 token；
+- 精确 CORS Origin，不再默认 `*`。
+
+推荐环境变量：
+
+```text
+SQ_PROXY_ALLOWED_ORIGIN=https://your-grader.example.com
+SQ_PROXY_TOKEN=replace-with-a-long-random-value
+SQ_PROXY_RATE_LIMIT=30
+SQ_PROXY_MAX_BYTES=26214400
 ```
+
+若启用 token，前端代理 URL 可填写为：
+
+```text
+https://your-proxy.example.com/proxy.php?token=YOUR_TOKEN&url=
+```
+
+这是防护示例，不等于完整的生产网关；公网部署还应在反向代理层增加日志脱敏、总流量/并发限制和监控。
+
+## 测试与验收
+
+```bash
+npm test
+node --check js/core.js
+node --check js/config.js
+node --check js/app.js
+```
+
+测试覆盖纯逻辑、真实 `app.js` PDF 页面判定路径、API 密钥迁移、429 重试、并发限制、复杂分值封顶、截断 answers JSON、静态资源引用和代理防护断言。CLI 测试覆盖关键共享逻辑与模拟集成路径，但不宣称可以证明任意第三方 AI 接口或所有浏览器环境的端到端行为。
+
+## 目录
+
+```text
 ai-sq-grader/
-├── index.html          # 页面结构 + 设置弹窗
-├── css/style.css       # 全部样式
-├── js/core.js          # 纯逻辑（同构，浏览器+Node 共用）
-├── js/config.js        # API 配置管理（三线路 + 代理）+ 直连调用
-├── js/app.js           # 5 步批改流水线（DOM 绑定，调用 SQCore）
-├── tests/core.test.js  # CLI 测试（node --test）
-├── proxy.example.php   # 可选的 PDF 下载代理示例
+├── index.html
+├── css/style.css
+├── js/app.js
+├── js/config.js
+├── js/core.js
+├── tests/
+├── vendor/
+├── proxy.example.php
+├── CHANGELOG.md
 ├── package.json
-├── README.md
-├── LICENSE
-└── .gitignore
+└── LICENSE
 ```
 
-## 🧪 测试与架构（CLI = GUI）
+## License
 
-界面无关的纯逻辑抽到了同构模块 **`js/core.js`**（`SQCore`），浏览器与 Node 共用同一份实现。**命令行测试覆盖的就是 GUI 实际运行的逻辑**，无需打开浏览器即可验证。
-
-```bash
-node --test        # 或 npm test
-```
-
-覆盖：MS 下载 URL 拼装、HTML 转义/徽章、`%PDF` 头校验、**被截断 JSON 的多级抢救**、重复题号合并、答卷按行拼接、仅「明确正确」计分的得分率计算等。
-
-## ⚠️ 免责声明
-
-批改结果由 AI 自动生成，**仅供参考与自测**，"疑似正确"部分建议与老师确认，最终成绩以官方为准。考试资源版权归各考试局所有。
-
-## 📄 License
-
-[MIT](./LICENSE)
+项目代码采用 MIT License。随附的 PDF.js 与 Font Awesome 许可证位于 `vendor/licenses/`。

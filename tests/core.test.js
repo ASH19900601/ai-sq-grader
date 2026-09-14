@@ -1,100 +1,114 @@
-/**
- * CLI 测试（Node 内置 node:test，无需安装依赖）
- * 运行：node --test
- * 验证的 SQCore 与 GUI 共用同一实现，故 CLI 结果即代表 GUI 行为。
- */
 const test = require('node:test');
-const assert = require('node:assert');
+const assert = require('node:assert/strict');
 const SQCore = require('../js/core.js');
 
-test('buildBehUrl：A-Level MS 链接', () => {
-    const state = { level: 'alevel', subjectCode: '9701', peh: 'chemistry-9701', year: '2023', season: 's', paper: '42' };
-    assert.strictEqual(SQCore.buildBehUrl(state, 'ms'),
-        'https://bestexamhelp.com/exam/cambridge-international-a-level/chemistry-9701/2023/9701_s23_ms_42.pdf');
+test('buildBehUrl builds QP and MS URLs', () => {
+    const state = { level: 'alevel', subjectCode: '9701', peh: 'chemistry-9701', year: '2026', season: 's', paper: '22' };
+    assert.match(SQCore.buildBehUrl(state, 'qp'), /9701_s26_qp_22\.pdf$/);
+    assert.match(SQCore.buildBehUrl(state, 'ms'), /9701_s26_ms_22\.pdf$/);
+    assert.throws(() => SQCore.buildBehUrl(state, 'er'), /Unsupported/);
 });
 
-test('escHtml：转义特殊字符与换行', () => {
-    assert.strictEqual(SQCore.escHtml('a<b>&"\nx'), 'a&lt;b&gt;&amp;"<br>x');
+test('HTML output escapes tags and attributes', () => {
+    assert.equal(SQCore.escHtml(`a<b>&"'\nx`), 'a&lt;b&gt;&amp;&quot;&#39;<br>x');
+    assert.match(SQCore.badgeHtml('未评估'), /badge-unassessed/);
+    assert.match(SQCore.badgeHtml('unknown'), /badge-unassessed/);
 });
 
-test('badgeHtml：状态映射到对应 class', () => {
-    assert.ok(SQCore.badgeHtml('明确正确').includes('badge-correct'));
-    assert.ok(SQCore.badgeHtml('疑似正确').includes('badge-possible'));
-    assert.ok(SQCore.badgeHtml('未知状态').includes('badge-wrong'));
+test('isPdfHeader requires a complete header', () => {
+    assert.equal(SQCore.isPdfHeader(new Uint8Array([0x25, 0x50, 0x44, 0x46])), true);
+    assert.equal(SQCore.isPdfHeader(new Uint8Array([0x25, 0x50])), false);
 });
 
-test('isPdfHeader：识别 %PDF', () => {
-    assert.strictEqual(SQCore.isPdfHeader(new Uint8Array([0x25, 0x50, 0x44, 0x46])), true);
-    assert.strictEqual(SQCore.isPdfHeader(new Uint8Array([1, 2, 3, 4])), false);
+test('safeParseJSON parses standard and fenced JSON', () => {
+    assert.equal(SQCore.safeParseJSON('{"questions":[]}').questions.length, 0);
+    assert.equal(SQCore.safeParseJSON('```json\n{"answers":[{"q_num":"1","answer_text":"x"}]}\n```').answers[0].answer_text, 'x');
 });
 
-test('safeParseJSON：标准 JSON 直接解析', () => {
-    const out = SQCore.safeParseJSON('{"questions":[{"q_num":"1(a)","total_marks":2,"mark_points":[]}]}');
-    assert.strictEqual(out.questions.length, 1);
+test('truncated answers are rescued as answers, not questions', () => {
+    const parsed = SQCore.safeParseJSON('{"answers":[{"q_num":"1","answer_text":"x"},{"q_num":"2","answer_text":"y"}');
+    assert.deepEqual(parsed.answers.map(answer => answer.q_num), ['1', '2']);
+    assert.equal(parsed.questions, undefined);
 });
 
-test('safeParseJSON：去除 ```json 代码块包裹', () => {
-    const out = SQCore.safeParseJSON('```json\n{"answers":[{"q_num":"1","answer_text":"x"}]}\n```');
-    assert.strictEqual(out.answers[0].answer_text, 'x');
+test('truncated question and result arrays are rescued', () => {
+    const questions = SQCore.safeParseJSON('{"questions":[{"q_num":"1","total_marks":1,"mark_points":[]},{"q_num":"2","total_marks":2,"mark_points":[]}');
+    assert.equal(questions.questions.length, 2);
+    const results = SQCore.safeParseJSON('{"results":[{"point_id":"p1","status":"错误"},{"point_id":"p2","status":"明确正确"}');
+    assert.equal(results.results.length, 2);
 });
 
-test('safeParseJSON：从被截断的 questions 中抢救', () => {
-    // 缺少收尾 ]}，但每个 question 完整
-    const truncated = '{"questions":[{"q_num":"1(a)","total_marks":2,"mark_points":[]},{"q_num":"1(b)","total_marks":3,"mark_points":[]}';
-    const out = SQCore.safeParseJSON(truncated);
-    assert.strictEqual(out.questions.length, 2);
-    assert.strictEqual(out.questions[1].q_num, '1(b)');
-});
-
-test('safeParseJSON：从被截断的 point_results 中抢救', () => {
-    const truncated = '{"results":[{"point_id":"1-1","status":"明确正确","reason":"ok"},{"point_id":"1-2","status":"错误","reason":"no"}';
-    const out = SQCore.safeParseJSON(truncated);
-    assert.strictEqual(out.results.length, 2);
-    assert.strictEqual(out.results[0].status, '明确正确');
-});
-
-test('safeParseJSON：DeepSeek 思考超时抛错', () => {
+test('irrecoverable model output reports an error', () => {
     assert.throws(() => SQCore.safeParseJSON('', { choices: [{ message: { reasoning_content: '...' } }] }, 'DeepSeek'), /思考超时/);
+    assert.throws(() => SQCore.safeParseJSON('not json'), /无法解析/);
 });
 
-test('safeParseJSON：完全无法解析抛错', () => {
-    assert.throws(() => SQCore.safeParseJSON('这不是 JSON', {}, 'AI'), /无法解析/);
-});
-
-test('mergeQuestions：合并重复题号、取较大满分', () => {
+test('mergeQuestions deduplicates IDs and preserves complex rules', () => {
     const merged = SQCore.mergeQuestions([
-        { q_num: '1(a)', total_marks: 2, mark_points: [{ point_id: 'p1' }] },
-        { q_num: '1(a)', total_marks: 3, mark_points: [{ point_id: 'p2' }] },
-        { q_num: '2', total_marks: 1, mark_points: [] }
+        { q_num: '1', total_marks: 2, mark_points: [{ point_id: 'M1', mark_type: 'M' }, { point_id: 'A1', mark_type: 'A', depends_on: ['M1'] }] },
+        { q_num: '1', total_marks: 2, mark_points: [{ point_id: 'A1' }, { point_id: 'B1', group_id: 'any-two', group_max: 2 }] }
     ]);
-    assert.strictEqual(merged.length, 2);
-    const q1 = merged.find(q => q.q_num === '1(a)');
-    assert.strictEqual(q1.total_marks, 3);
-    assert.strictEqual(q1.mark_points.length, 2);
+    assert.equal(merged[0].mark_points.length, 3);
+    assert.deepEqual(merged[0].mark_points[1].depends_on, ['M1']);
+    assert.equal(merged[0].mark_points[2].group_max, 2);
 });
 
-test('mergeAnswers：同题号按行拼接', () => {
-    const ans = SQCore.mergeAnswers([
-        { q_num: '1', answer_text: 'line1', confidence: 'high' },
-        { q_num: '1', answer_text: 'line2', confidence: 'low' },
-        { q_num: '2', answer_text: 'only', confidence: 'high' }
+test('mergeAnswers joins fragments and tracks source pages', () => {
+    const answers = SQCore.mergeAnswers([
+        { q_num: '1', answer_text: 'line 1', confidence: 'high', source_page: 0 },
+        { q_num: '1', answer_text: 'line 2', confidence: 'medium', source_page: 1 }
     ]);
-    assert.strictEqual(ans['1'].answer_text, 'line1\nline2');
-    assert.strictEqual(ans['2'].answer_text, 'only');
+    assert.equal(answers['1'].answer_text, 'line 1\nline 2');
+    assert.deepEqual(answers['1'].source_pages, [0, 1]);
 });
 
-test('computeReport：仅明确正确计分，得分率正确', () => {
-    const results = [
-        { total_marks: 2, point_results: [{ status: '明确正确' }, { status: '疑似正确' }] },
-        { total_marks: 2, point_results: [{ status: '明确正确' }, { status: '错误' }] }
-    ];
-    const r = SQCore.computeReport(results);
-    assert.strictEqual(r.totalGot, 2);
-    assert.strictEqual(r.totalMax, 4);
-    assert.strictEqual(r.rate, '50%');
+test('scanned and low-text pages are retained', () => {
+    assert.deepEqual(SQCore.classifyPdfPage({ text: '', hasImages: true }), { skip: false, reason: '', mode: 'image' });
+    assert.equal(SQCore.classifyPdfPage({ text: 'x', hasImages: false }).skip, false);
+    assert.equal(SQCore.classifyPdfPage({ text: 'BLANK PAGE', hasImages: true }).skip, false);
+    assert.equal(SQCore.classifyPdfPage({ text: 'BLANK PAGE', hasImages: false }).skip, true);
 });
 
-test('computeReport：满分为 0 时得分率显示 -', () => {
-    const r = SQCore.computeReport([{ total_marks: 0, point_results: [] }]);
-    assert.strictEqual(r.rate, '-');
+test('scoring never exceeds maximum', () => {
+    const question = { total_marks: 1, point_results: [{ point_id: 'p1', status: '明确正确' }, { point_id: 'p2', status: '明确正确' }] };
+    assert.equal(SQCore.scoreQuestion(question).got, 1);
+    assert.deepEqual(SQCore.computeReport([question]), { totalGot: 1, totalMax: 1, rate: '100%', incomplete: false, incompleteQuestions: 0 });
+});
+
+test('dependencies and any-N caps are applied', () => {
+    const score = SQCore.scoreQuestion({ total_marks: 4, point_results: [
+        { point_id: 'M1', status: '错误' },
+        { point_id: 'A1', depends_on: ['M1'], status: '明确正确' },
+        { point_id: 'B1', group_id: 'g', group_max: 1, status: '明确正确' },
+        { point_id: 'B2', group_id: 'g', group_max: 1, status: '明确正确' }
+    ] });
+    assert.equal(score.got, 1);
+    assert.equal(score.awards.A1, 0);
+    assert.equal(score.awards.B2, 0);
+});
+
+test('unassessed points make the report incomplete', () => {
+    const report = SQCore.computeReport([{ total_marks: 2, assessment_complete: false, point_results: [
+        { point_id: 'p1', status: '明确正确' }, { point_id: 'p2', status: '未评估' }
+    ] }]);
+    assert.equal(report.totalGot, 1);
+    assert.equal(report.rate, '-');
+    assert.equal(report.incomplete, true);
+});
+
+test('mapWithConcurrency enforces the limit and keeps order', async () => {
+    let active = 0, peak = 0;
+    const output = await SQCore.mapWithConcurrency([1, 2, 3, 4, 5], 2, async value => {
+        active++; peak = Math.max(peak, active);
+        await new Promise(resolve => setTimeout(resolve, 5));
+        active--; return value * 2;
+    });
+    assert.equal(peak, 2);
+    assert.deepEqual(output, [2, 4, 6, 8, 10]);
+});
+
+test('retry helpers parse delays and statuses', () => {
+    assert.equal(SQCore.parseRetryAfter('2'), 2000);
+    assert.equal(SQCore.isRetryableStatus(429), true);
+    assert.equal(SQCore.isRetryableStatus(400), false);
 });

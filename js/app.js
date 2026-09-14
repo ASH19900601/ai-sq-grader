@@ -1,596 +1,580 @@
-/**
- * app.js — 结构题(SQ) AI 批改主逻辑
- * 改编自原站 essay-grader.js。改动：
- *  - 去除账号/收藏/问AI 等依赖后端的功能
- *  - AI 调用改为通过 AppConfig 直连用户配置的 OpenAI 兼容接口
- *  - PDF 下载改用用户在配置中填写的代理地址（可选；否则手动上传 MS）
- *
- * 5 步流水线：选择试卷 → 上传答卷 → 准备 MS → AI 解析 → AI 比对 → 报告
- */
+/** Main five-stage grading pipeline. */
 
-// ===================== 科目数据 =====================
+const makePapers = numbers => numbers.flatMap(n => [1, 2, 3].map(v => ({ n, v })));
 const SUBJECTS_DATA = {
     igcse: [
-        { code:'0625', name:'Physics',    peh:'physics-0625',    papers:[{n:4,v:1},{n:4,v:2},{n:4,v:3},{n:6,v:1},{n:6,v:2},{n:6,v:3}] },
-        { code:'0620', name:'Chemistry',  peh:'chemistry-0620',  papers:[{n:4,v:1},{n:4,v:2},{n:4,v:3},{n:6,v:1},{n:6,v:2},{n:6,v:3}] },
-        { code:'0610', name:'Biology',    peh:'biology-0610',    papers:[{n:4,v:1},{n:4,v:2},{n:4,v:3},{n:6,v:1},{n:6,v:2},{n:6,v:3}] },
-        { code:'0580', name:'Mathematics',peh:'mathematics-0580',papers:[{n:2,v:1},{n:2,v:2},{n:4,v:1},{n:4,v:2}] },
+        { code: '0625', name: 'Physics', peh: 'physics-0625', papers: makePapers([1, 2, 3, 4, 5, 6]) },
+        { code: '0620', name: 'Chemistry', peh: 'chemistry-0620', papers: makePapers([1, 2, 3, 4, 5, 6]) },
+        { code: '0610', name: 'Biology', peh: 'biology-0610', papers: makePapers([1, 2, 3, 4, 5, 6]) },
+        { code: '0580', name: 'Mathematics', peh: 'mathematics-0580', papers: makePapers([1, 2, 3, 4]) }
     ],
     alevel: [
-        { code:'9702', name:'Physics',    peh:'physics-9702',    papers:[{n:4,v:1},{n:4,v:2},{n:4,v:3},{n:5,v:1},{n:5,v:2},{n:5,v:3}] },
-        { code:'9701', name:'Chemistry',  peh:'chemistry-9701',  papers:[{n:4,v:1},{n:4,v:2},{n:4,v:3},{n:5,v:1},{n:5,v:2},{n:5,v:3}] },
-        { code:'9700', name:'Biology',    peh:'biology-9700',    papers:[{n:4,v:1},{n:4,v:2},{n:4,v:3},{n:5,v:1},{n:5,v:2},{n:5,v:3}] },
-        { code:'9709', name:'Mathematics',peh:'mathematics-9709',papers:[{n:1,v:1},{n:1,v:2},{n:1,v:3},{n:3,v:1},{n:3,v:2},{n:3,v:3}] },
-        { code:'9708', name:'Economics',  peh:'economics-9708',  papers:[{n:2,v:1},{n:2,v:2},{n:4,v:1},{n:4,v:2}] },
+        { code: '9702', name: 'Physics', peh: 'physics-9702', papers: makePapers([1, 2, 3, 4, 5]) },
+        { code: '9701', name: 'Chemistry', peh: 'chemistry-9701', papers: makePapers([1, 2, 3, 4, 5]) },
+        { code: '9700', name: 'Biology', peh: 'biology-9700', papers: makePapers([1, 2, 3, 4, 5]) },
+        { code: '9709', name: 'Mathematics', peh: 'mathematics-9709', papers: makePapers([1, 2, 3, 4, 5, 6]) },
+        { code: '9708', name: 'Economics', peh: 'economics-9708', papers: makePapers([1, 2, 3, 4]) }
     ]
 };
 
-// ===================== State =====================
 let state = {
     level: 'alevel', subjectCode: '9702', subjectName: 'Physics', peh: 'physics-9702',
-    year: '2023', season: 's', paper: '41',
-    userPages: [], msPages: [], msStructure: null, userAnswers: null,
-    paperConfirmed: false, manualMsBuf: null,
-    apiChoice: 'line1', useDeepseek: false
+    year: String(new Date().getFullYear()), season: 's', paper: '21',
+    userPages: [], msPages: [], qpPages: [], msStructure: null, qpStructure: null, userAnswers: null,
+    paperConfirmed: false, confirmedPaperId: '', manualMsBuf: null, manualQpBuf: null,
+    apiChoice: 'line1', useDeepseek: false, runController: null
 };
 
 const $ = id => document.getElementById(id);
+const signal = () => state.runController?.signal;
 
-function log(msg, type = 'info') {
+function log(message, type = 'info') {
     const logEl = $('progressLog');
+    if (!logEl) return;
     const line = document.createElement('div');
     line.className = `log-line ${type}`;
-    line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
     logEl.appendChild(line);
     logEl.scrollTop = logEl.scrollHeight;
 }
-function setProgress(pct, title) {
-    $('progressBarFill').style.width = pct + '%';
-    if (title) $('progressTitle').textContent = title;
+
+function setProgress(percent, title) {
+    if ($('progressBarFill')) $('progressBarFill').style.width = `${Math.max(0, Math.min(100, percent))}%`;
+    if (title && $('progressTitle')) $('progressTitle').textContent = title;
 }
-function setPipelineStep(n) {
-    document.querySelectorAll('.pipeline-step').forEach((el, i) => {
-        el.classList.remove('active', 'done');
-        if (i + 1 < n) el.classList.add('done');
-        if (i + 1 === n) el.classList.add('active');
+
+function setPipelineStep(number) {
+    document.querySelectorAll('.pipeline-step').forEach((element, index) => {
+        element.classList.remove('active', 'done');
+        if (index + 1 < number) element.classList.add('done');
+        if (index + 1 === number) element.classList.add('active');
     });
 }
+
 function unlockSection(id) {
-    const el = $(id);
-    if (el) { el.classList.remove('locked'); el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+    const element = $(id);
+    if (element) element.classList.remove('locked');
 }
 
-// ===================== AI 调用封装 =====================
-async function callAI(messages, jsonMode = true) {
-    const payload = { messages, temperature: 0.1, max_tokens: 4096 };
-    if (jsonMode) payload.response_format = { type: 'json_object' };
-    const data = await AppConfig.chat(state.apiChoice || 'line1', payload);
+function requireArrayResult(result, key, stage) {
+    if (!result || !Array.isArray(result[key])) throw new Error(`${stage} 返回缺少 ${key} 数组`);
+    return result[key];
+}
+
+async function callModel(lineKey, messages, maxTokens = 4096) {
+    const payload = { messages, temperature: 0.1, max_tokens: maxTokens, response_format: { type: 'json_object' } };
+    const data = await AppConfig.chat(lineKey, payload, { signal: signal(), retries: 3, timeoutMs: 60000 });
     const content = data.choices?.[0]?.message?.content || '';
-    return jsonMode ? safeParseJSON(content, data, 'AI') : content;
-}
-async function callDeepSeek(messages, jsonMode = true) {
-    const payload = { messages, temperature: 0.1, max_tokens: 8192 };
-    if (jsonMode) payload.response_format = { type: 'json_object' };
-    const data = await AppConfig.chat('deepseek', payload);
-    const content = data.choices?.[0]?.message?.content || '';
-    return jsonMode ? safeParseJSON(content, data, 'DeepSeek') : content;
-}
-function imageMsg(base64, detail = 'high') {
-    return { type: 'image_url', image_url: { url: base64, detail } };
+    return SQCore.safeParseJSON(content, data, lineKey === 'deepseek' ? 'DeepSeek' : 'AI');
 }
 
-// ===================== PDF.js 渲染 =====================
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+function callAI(messages) { return callModel(state.apiChoice || 'line1', messages, 4096); }
+function callDeepSeek(messages) { return callModel('deepseek', messages, 8192); }
+function imageMsg(base64, detail = 'high') { return { type: 'image_url', image_url: { url: base64, detail } }; }
 
-async function pdfToHybrid(arrayBuffer, scale = 1.5, isMs = false) {
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdfjs/pdf.worker.min.js';
+
+async function inspectPdfPage(page) {
+    let text = '';
+    let hasImages = false;
+    try {
+        const textContent = await page.getTextContent();
+        text = textContent.items.map(item => item.str).join(' ');
+    } catch (_) {}
+    try {
+        const opList = await page.getOperatorList();
+        const imageOps = [pdfjsLib.OPS.paintImageXObject, pdfjsLib.OPS.paintJpegXObject, pdfjsLib.OPS.paintInlineImageXObject].filter(Number.isFinite);
+        hasImages = opList.fnArray.some(op => imageOps.includes(op));
+    } catch (_) {
+        hasImages = true;
+    }
+    return { text, hasImages };
+}
+
+async function renderPdfPage(page, scale) {
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.ceil(viewport.width);
+    canvas.height = Math.ceil(viewport.height);
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+    return canvas.toDataURL('image/jpeg', 0.88);
+}
+
+async function pdfToHybrid(arrayBuffer, scale = 1.5, isMs = false, label = 'PDF') {
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     const pages = [];
-    for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        let text = '', hasImages = false;
-        try {
-            const textContent = await page.getTextContent();
-            text = textContent.items.map(item => item.str).join(' ');
-            const opList = await page.getOperatorList();
-            hasImages = opList.fnArray.includes(pdfjsLib.OPS.paintImageXObject) ||
-                        opList.fnArray.includes(pdfjsLib.OPS.paintJpegXObject) ||
-                        opList.fnArray.includes(pdfjsLib.OPS.paintInlineImageXObject);
-
-            const isMsCover = text.includes('Maximum Mark') && text.includes('MARK SCHEME');
-            const isQpCover = (text.includes('CANDIDATE') && text.includes('NUMBER')) || (text.includes('INSTRUCTIONS') && text.includes('INFORMATION'));
-            const isRules = text.includes('Generic Marking Principles') || text.includes('GENERIC MARKING PRINCIPLE') || text.includes('Calculation specific guidance') || text.includes('generic marking principles');
-            const isBlank = (text.includes('BLANK PAGE') && text.length < 500) || text.trim().length < 20;
-
-            if (isMs && (isMsCover || isRules || isBlank)) { log(`  ✂️ 裁剪 MS 第 ${i} 页 (封面/规则/空白)`, 'info'); continue; }
-            if (!isMs && (isQpCover || isBlank)) { log(`  ✂️ 裁剪答卷 第 ${i} 页 (封面/空白页)`, 'info'); continue; }
-        } catch (e) { hasImages = true; }
-
-        if (!hasImages && text.trim().length > 50) {
-            log(`  📄 第 ${i} 页检测为纯文本，使用极速文本模式`, 'info');
-            pages.push({ type: 'text', content: text });
+    for (let number = 1; number <= pdf.numPages; number++) {
+        if (signal()?.aborted) throw new DOMException('批改已取消', 'AbortError');
+        const page = await pdf.getPage(number);
+        const inspection = await inspectPdfPage(page);
+        const decision = SQCore.classifyPdfPage({ ...inspection, isMs });
+        if (decision.skip) {
+            log(`  ✂️ 跳过 ${label} 第 ${number} 页（${decision.reason}）`, 'info');
+            continue;
+        }
+        if (decision.mode === 'text') {
+            log(`  📄 ${label} 第 ${number} 页使用文本模式`, 'info');
+            pages.push({ type: 'text', content: inspection.text, pageNumber: number });
         } else {
-            log(`  🖼️ 第 ${i} 页包含图像/复杂版式，使用视觉图片模式`, 'info');
-            const viewport = page.getViewport({ scale });
-            const canvas = document.createElement('canvas');
-            canvas.width = viewport.width; canvas.height = viewport.height;
-            await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-            pages.push({ type: 'image', content: canvas.toDataURL('image/jpeg', 0.85) });
+            log(`  🖼️ ${label} 第 ${number} 页保留为图像（扫描/图表/复杂版式）`, 'info');
+            pages.push({ type: 'image', content: await renderPdfPage(page, scale), pageNumber: number });
         }
     }
     return pages;
 }
 
-async function pdfToImages(arrayBuffer, scale = 1.5, isMs = false, label = '答卷') {
+async function pdfToAnswerImages(arrayBuffer, scale = 1.5) {
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     const pages = [];
-    for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        try {
-            const textContent = await page.getTextContent();
-            const text = textContent.items.map(item => item.str).join(' ');
-            const isQpCover = (text.includes('CANDIDATE') && text.includes('NUMBER')) || (text.includes('INSTRUCTIONS') && text.includes('INFORMATION'));
-            const isBlank = (text.includes('BLANK PAGE') && text.length < 500) || text.trim().length < 20;
-            if (!isMs && (isQpCover || isBlank)) { log(`  ✂️ 裁剪${label} 第 ${i} 页 (封面/空白页)`, 'info'); continue; }
-        } catch (e) {}
-        const viewport = page.getViewport({ scale });
-        const canvas = document.createElement('canvas');
-        canvas.width = viewport.width; canvas.height = viewport.height;
-        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-        pages.push(canvas.toDataURL('image/jpeg', 0.85));
+    for (let number = 1; number <= pdf.numPages; number++) {
+        if (signal()?.aborted) throw new DOMException('批改已取消', 'AbortError');
+        const page = await pdf.getPage(number);
+        const inspection = await inspectPdfPage(page);
+        const decision = SQCore.classifyPdfPage({ ...inspection, isMs: false });
+        if (decision.skip) {
+            log(`  ✂️ 跳过答卷第 ${number} 页（${decision.reason}）`, 'info');
+            continue;
+        }
+        pages.push({ type: 'image', content: await renderPdfPage(page, scale), pageNumber: number });
     }
     return pages;
 }
 
-async function imagesToBase64List(files) {
-    const results = [];
-    for (const file of files) {
-        const b64 = await new Promise((resolve, reject) => {
+async function imagesToPages(files) {
+    const pages = [];
+    for (const [index, file] of files.entries()) {
+        const content = await new Promise((resolve, reject) => {
             const reader = new FileReader();
-            reader.onload = e => resolve(e.target.result);
+            reader.onload = event => resolve(event.target.result);
             reader.onerror = reject;
             reader.readAsDataURL(file);
         });
-        results.push(b64);
+        pages.push({ type: 'image', content, pageNumber: index + 1 });
     }
-    return results;
+    return pages;
 }
 
-// ===================== 通过代理下载 PDF =====================
 async function fetchWithTimeout(url, timeoutMs = 30000) {
-    const ctrl = new AbortController();
-    const tid = setTimeout(() => ctrl.abort(), timeoutMs);
-    try { const resp = await fetch(url, { signal: ctrl.signal }); clearTimeout(tid); return resp; }
-    catch (e) { clearTimeout(tid); throw e; }
+    const controller = new AbortController();
+    let timedOut = false;
+    const onAbort = () => controller.abort();
+    signal()?.addEventListener('abort', onAbort, { once: true });
+    const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+    try { return await fetch(url, { signal: controller.signal }); }
+    catch (error) {
+        if (timedOut && !signal()?.aborted) throw new Error(`代理请求超时（${Math.round(timeoutMs / 1000)} 秒）`);
+        throw error;
+    }
+    finally {
+        clearTimeout(timeout);
+        signal()?.removeEventListener('abort', onAbort);
+    }
 }
 
-async function fetchPdfViaProxy(targetUrl, label = '', timeoutMs = 30000) {
+async function fetchPdfViaProxy(targetUrl, label, timeoutMs = 30000) {
     const proxyBase = AppConfig.getProxyUrl();
     if (!proxyBase) throw new Error('未配置 PDF 下载代理');
-    const proxyUrl = proxyBase + encodeURIComponent(targetUrl);
     log(`  📡 通过代理下载 ${label}...`, 'info');
-    const resp = await fetchWithTimeout(proxyUrl, timeoutMs);
-    if (!resp.ok) {
-        const errText = await resp.text().catch(() => '');
-        throw new Error(`代理返回 HTTP ${resp.status}: ${errText.slice(0, 120)}`);
-    }
-    const buf = await resp.arrayBuffer();
-    if (buf.byteLength <= 5000) throw new Error('返回内容过小，可能不是有效 PDF');
-    if (!SQCore.isPdfHeader(buf.slice(0, 4))) throw new Error('代理返回了非 PDF 内容');
-    log(`  ✅ ${label} 下载成功 (${Math.round(buf.byteLength / 1024)}KB)`, 'success');
-    return buf;
+    const response = await fetchWithTimeout(proxyBase + encodeURIComponent(targetUrl), timeoutMs);
+    if (!response.ok) throw new Error(`代理返回 HTTP ${response.status}: ${(await response.text().catch(() => '')).slice(0, 120)}`);
+    const buffer = await response.arrayBuffer();
+    if (buffer.byteLength <= 5000 || !SQCore.isPdfHeader(buffer.slice(0, 4))) throw new Error('代理返回的内容不是有效 PDF');
+    log(`  ✅ ${label} 下载成功 (${Math.round(buffer.byteLength / 1024)}KB)`, 'success');
+    return buffer;
 }
 
-function buildBehUrl(type) {
-    return SQCore.buildBehUrl(state, type);
-}
+function buildBehUrl(type) { return SQCore.buildBehUrl(state, type); }
 
-// ===================== JSON 解析（含截断抢救）=====================
-function safeParseJSON(content, data, errorPrefix = 'AI') {
-    return SQCore.safeParseJSON(content, data, errorPrefix);
-}
-
-// ===================== Step 1: 解析 MS =====================
 async function parseMarkScheme(msPages) {
-    log('📄 正在并发分析 Mark Scheme...', 'info');
-    const textOnly = msPages.every(p => p.type === 'text');
-    const shouldUseDeepSeek = state.useDeepseek && textOnly && AppConfig.hasDeepSeek();
-    if (shouldUseDeepSeek) log('🤖 检测到纯文本 MS，采用 DeepSeek 解析...', 'info');
+    log('📄 正在限流解析 Mark Scheme...', 'info');
+    const textOnly = msPages.every(page => page.type === 'text');
+    const useDeepSeek = state.useDeepseek && textOnly && AppConfig.hasDeepSeek();
+    const caller = useDeepSeek ? callDeepSeek : callAI;
+    const batchSize = useDeepSeek ? 1 : 3;
+    const batches = [];
+    for (let i = 0; i < msPages.length; i += batchSize) batches.push({ start: i, pages: msPages.slice(i, i + batchSize) });
+    const parsed = await SQCore.mapWithConcurrency(batches, 2, async batch => {
+        const content = [{ type: 'text', text: `你是 CAIE 资深审核员。完整提取这些 Mark Scheme 页面的题目与评分规则。不要把每一行机械地当作独立一分。
 
-    const BATCH = shouldUseDeepSeek ? 1 : 4;
-    const promises = [];
+严格返回 JSON：
+{"questions":[{"q_num":"1(a)(i)","total_marks":2,"general_rules":[],"mark_points":[{"point_id":"1(a)(i)-M1","description":"MS原意","mark_type":"M|A|B|SC|FT","marks":1,"alternatives":[],"depends_on":[],"group_id":"","group_max":null,"route_id":"","follow_through":false,"not_from_wrong_working":false,"ignore_subsequent_working":false,"rule_notes":""}]}]}
 
-    for (let i = 0; i < msPages.length; i += BATCH) {
-        const batch = msPages.slice(i, i + BATCH);
-        const content = [
-            { type: 'text', text: `你是一位 CAIE 考试资深审核员。请仔细阅读以下 Mark Scheme 页面，提取出所有题目的评分结构。
-
-输出格式（严格JSON）：
-{
-  "questions": [
-    { "q_num": "1(a)(i)", "total_marks": 2,
-      "mark_points": [ { "point_id": "1(a)(i)-1", "description": "得分点的完整描述（按 MS 原文）", "is_alternative": false, "alternatives": [] } ] }
-  ]
+规则：
+- 准确保留 M、A、B、SC、FT、dep、follow-through、not from wrong working、ignore subsequent working。
+- A 分依赖 M 分时，把 M 的 point_id 写入 depends_on。
+- “any N from”及多路线共享上限：同组写相同 group_id 和 group_max；OR 路线写 route_id。
+- alternatives 只用于同一得分点的等价答案；marks 是该点分值。
+- 没有得分内容时返回 {"questions":[]}。` },
+        ...batch.pages.map(page => page.type === 'text' ? { type: 'text', text: `\n[MS page ${page.pageNumber}]\n${page.content}` } : imageMsg(page.content))];
+        const result = await caller([{ role: 'user', content }]);
+        const questions = requireArrayResult(result, 'questions', `MS 第 ${batch.start + 1} 批`);
+        log(`  ✅ MS 保留页 ${batch.start + 1}-${batch.start + batch.pages.length} 解析完成`, 'success');
+        return questions;
+    }, signal());
+    return SQCore.mergeQuestions(parsed.flat());
 }
 
-注意：
-- q_num 要完整，如 "1(a)(i)", "2(b)", "3" 等
-- 每个 mark_point 是独立的一个得分点
-- alternatives 是同一个点的备选答案（MS 上写的 OR ...）
-- "allow"/"accept" 开头的宽松得分也要包含
-- 忽略表格格式，只关注得分点内容
-- 如果这几页没有得分点信息，返回 {"questions": []}` },
-            ...batch.map(p => p.type === 'text' ? { type: 'text', text: p.content } : (p.type === 'image' ? imageMsg(p.content) : imageMsg(p)))
-        ];
-
-        const caller = shouldUseDeepSeek ? callDeepSeek : callAI;
-        const pr = (async () => {
-            let result;
-            try { result = await caller([{ role: 'user', content }]); }
-            catch (e) { log(`  ⚠️ MS 第 ${i + 1} 批解析出错，正在重试...`, 'info'); result = await caller([{ role: 'user', content }]); }
-            log(`  ✅ MS 第 ${i + 1}-${Math.min(i + BATCH, msPages.length)} 页解析完成`, 'info');
-            return result.questions || [];
-        })().catch(e => { log(`  ⚠️ MS 第 ${i + 1} 批解析失败: ${e.message}`, 'error'); return []; });
-        promises.push(pr);
-    }
-
-    const allQuestions = (await Promise.all(promises)).flat();
-    return SQCore.mergeQuestions(allQuestions);
+async function parseQuestionPaper(qpPages) {
+    log('📘 正在限流解析 Question Paper 题干...', 'info');
+    const parsed = await SQCore.mapWithConcurrency(qpPages, 2, async (page, index) => {
+        const content = [{ type: 'text', text: `提取这张 CAIE Question Paper 页面中的每个小题。保留 command word、给定数据、公式、图表/示意图的关键信息。严格返回 JSON：{"questions":[{"q_num":"1(a)(i)","question_text":"完整题意"}]}。没有题目则返回空数组。` },
+            page.type === 'text' ? { type: 'text', text: page.content } : imageMsg(page.content)];
+        const result = await callAI([{ role: 'user', content }]);
+        const questions = requireArrayResult(result, 'questions', `QP 第 ${page.pageNumber} 页`);
+        for (const question of questions) question.source_pages = [index];
+        log(`  ✅ QP 第 ${page.pageNumber} 页解析完成`, 'success');
+        return questions;
+    }, signal());
+    return SQCore.mergeQuestionContexts(parsed.flat());
 }
 
-// ===================== Step 2: 识别用户答卷 =====================
 async function extractUserAnswers(userPages, msStructure) {
-    log('✍️ 正在并发识别用户答卷...', 'info');
+    log('✍️ 正在限流识别答卷...', 'info');
     const questionList = msStructure.map(q => q.q_num).join(', ');
-    const promises = [];
-
-    for (let i = 0; i < userPages.length; i++) {
-        const page = userPages[i];
-        const content = [
-            { type: 'text', text: `你是一位顶级 OCR 专家，专门负责识别 CAIE 学生的手写答卷。
-请极其仔细地识别以下图片中学生的所有手写答案。
-
-本次试卷包含的题目编号为：${questionList}
-
-输出格式（严格JSON）：
-{ "answers": [ { "q_num": "1(a)(i)", "answer_text": "学生写的所有内容（包括对图形的描述）", "confidence": "high/medium/low" } ] }
-
-非常关键的警告：
-1. q_num 必须与页面上印刷的题目编号完全一致。
-2. 学生字迹可能潦草、轻微或写在边角，请逐行扫描。
-3. 只要在答题区域内看到任何手写笔迹，绝对不能判断为空白，尽力提取每一个字。
-4. 【画图题特判】遇到画图题（示意图、化学结构式、坐标图等）请结合图片用文字详细描述学生画的内容，不能因只有图没文字就判未作答。
-5. 只有 100% 确认完全没有任何笔迹且没有画图时，才把 answer_text 写为"（未作答）"。
-6. 忽略印刷的题目本身，只识别学生手写和手画的内容。` },
-            (page.type === 'text' ? { type: 'text', text: page.content } : (page.type === 'image' ? imageMsg(page.content) : imageMsg(page)))
-        ];
-
-        const pr = (async () => {
-            let result;
-            try { result = await callAI([{ role: 'user', content }]); }
-            catch (e) { log(`  ⚠️ 答卷第 ${i + 1} 页初次识别出错，正在重试...`, 'info'); result = await callAI([{ role: 'user', content }]); }
-            log(`  ✅ 答卷第 ${i + 1} 页识别完成`, 'info');
-            return result.answers || [];
-        })().catch(e => { log(`  ⚠️ 答卷第 ${i + 1} 页识别失败: ${e.message}`, 'error'); return []; });
-        promises.push(pr);
-    }
-
-    const allAnswers = (await Promise.all(promises)).flat();
-    return SQCore.mergeAnswers(allAnswers);
+    const parsed = await SQCore.mapWithConcurrency(userPages, 3, async (page, index) => {
+        const content = [{ type: 'text', text: `你是 CAIE 手写答卷 OCR 专家。识别本页学生的全部手写/手画内容，并对应到这些题号：${questionList}。
+严格返回 JSON：{"answers":[{"q_num":"1(a)(i)","answer_text":"所有书写内容及图形简述","confidence":"high|medium|low"}]}。
+不要遗漏轻微字迹、边角计算、结构式、曲线、箭头或标注。只有确认完全无作答时才写“（未作答）”。文字转录用于索引；最终判分还会直接查看原图。` }, imageMsg(page.content)];
+        const result = await callAI([{ role: 'user', content }]);
+        const answers = requireArrayResult(result, 'answers', `答卷第 ${page.pageNumber} 页`);
+        for (const answer of answers) answer.source_page = index;
+        log(`  ✅ 答卷第 ${page.pageNumber} 页识别完成`, 'success');
+        return answers;
+    }, signal());
+    return SQCore.mergeAnswers(parsed.flat());
 }
 
-// ===================== Step 3: 逐得分点比对 =====================
-async function compareAnswers(msStructure, userAnswers) {
-    const textOnly = state.msPages && state.msPages.length > 0 && state.msPages.every(p => p.type === 'text');
-    const shouldUseDeepSeek = state.useDeepseek && textOnly && AppConfig.hasDeepSeek();
-    const caller = shouldUseDeepSeek ? callDeepSeek : callAI;
-    log(shouldUseDeepSeek ? '🤖 AI 正在使用 DeepSeek 并发比对...' : '🤖 AI 正在并发比对所有题目...', 'info');
+function contextForQuestion(qNum, contexts) {
+    if (contexts[qNum]) return contexts[qNum];
+    const key = Object.keys(contexts).find(candidate => candidate.startsWith(qNum) || qNum.startsWith(candidate));
+    return key ? contexts[key] : { question_text: '（未能提取对应题干）', source_pages: [] };
+}
 
+function appendSourceImages(content, pages, indexes, label) {
+    const unique = [...new Set(indexes || [])].filter(index => pages[index]?.type === 'image');
+    for (const index of unique) {
+        content.push({ type: 'text', text: `[${label}，原 PDF 第 ${pages[index].pageNumber} 页]` });
+        content.push(imageMsg(pages[index].content));
+    }
+}
+
+async function compareAnswers(msStructure, userAnswers, qpStructure) {
+    // Raw QP/answer images are always attached, so the final pass must use a vision line.
+    const caller = callAI;
+    log('🤖 AI 正在限流逐题判分，并直接查看题干与答卷原图...', 'info');
     let completed = 0;
-    const totalQ = msStructure.length;
+    return SQCore.mapWithConcurrency(msStructure, 3, async question => {
+        const userAnswer = userAnswers[question.q_num];
+        const studentText = userAnswer?.answer_text || '（未作答）';
+        const qpContext = contextForQuestion(question.q_num, qpStructure);
+        const qResult = { q_num: question.q_num, total_marks: question.total_marks, student_answer: studentText, point_results: [], assessment_complete: true };
+        if (!question.mark_points.length) return qResult;
+        const ruleJson = JSON.stringify({ general_rules: question.general_rules, mark_points: question.mark_points }, null, 2);
+        const prompt = `你是严格的 CAIE ${state.subjectName} 评卷官。请依据题干、原始答卷图像和结构化 MS 逐点评估证据。
 
-    const promises = msStructure.map(async (question) => {
-        const userAns = userAnswers[question.q_num];
-        const studentText = userAns ? userAns.answer_text : '（未作答）';
-        const qResult = { q_num: question.q_num, total_marks: question.total_marks, student_answer: studentText, point_results: [] };
-        if (question.mark_points.length === 0) return qResult;
+【题号】${question.q_num}
+【QP 题干】${qpContext.question_text || '（未提取到文字，请查看随附QP原图）'}
+【OCR 转录（只作索引，原图优先）】${studentText}
+【MS 规则】${ruleJson}
 
-        const pointsPrompt = question.mark_points.map(p =>
-            `[ID: ${p.point_id}]\n描述: ${p.description}\n${p.alternatives && p.alternatives.length > 0 ? '备选: ' + p.alternatives.join(' | ') : ''}`
-        ).join('\n\n');
-
-        const content = `你是一位严格的 CAIE 考试评卷官，精通 ${state.subjectName}。
-
-【学生在该题 (${question.q_num}) 写的全部内容】
-${studentText}
-
-【官方 Mark Scheme 得分点列表】
-请逐一判断以下得分点的获得情况，只能从4个状态选一个：明确正确、疑似正确、错误、MS之外。并给出简短中文理由（15字以内）。
-
-${pointsPrompt}
-
-返回严格JSON：
-{ "results": [ { "point_id": "得分点ID", "status": "明确正确|疑似正确|错误|MS之外", "reason": "简短理由" } ] }`;
-
+逐个 point_id 返回：明确正确、疑似正确、错误、MS之外。只判断该点的证据是否满足；依赖分与组上限由程序确定执行。FT、SC、not from wrong working、ignore subsequent working 等仍须按 rule_notes 判断。理由不超过25字。
+严格返回 JSON：{"results":[{"point_id":"...","status":"明确正确|疑似正确|错误|MS之外","reason":"..."}]}`;
+        const messageContent = [{ type: 'text', text: prompt }];
+        const qpIndexes = qpContext.source_pages?.length ? qpContext.source_pages : state.qpPages.map((_, index) => index);
+        const answerIndexes = userAnswer?.source_pages?.length ? userAnswer.source_pages : state.userPages.map((_, index) => index);
+        appendSourceImages(messageContent, state.qpPages, qpIndexes, 'QP原图');
+        appendSourceImages(messageContent, state.userPages, answerIndexes, '学生答卷原图');
         try {
-            let res;
-            try { res = await caller([{ role: 'user', content: [{ type: 'text', text: content }] }]); }
-            catch (e) { log(`  ⚠️ 题目 ${question.q_num} 初次比对出错，正在重试...`, 'info'); res = await caller([{ role: 'user', content: [{ type: 'text', text: content }] }]); }
-            const resultMap = {};
-            if (res.results) for (const r of res.results) resultMap[r.point_id] = r;
-            for (const p of question.mark_points) {
-                const r = resultMap[p.point_id];
-                qResult.point_results.push({ point_id: p.point_id, description: p.description, status: r ? r.status : '错误', reason: r ? r.reason : '未评估' });
+            const response = await caller([{ role: 'user', content: messageContent }]);
+            const rows = requireArrayResult(response, 'results', `题目 ${question.q_num}`);
+            const resultMap = new Map(rows.map(row => [String(row.point_id), row]));
+            for (const point of question.mark_points) {
+                const row = resultMap.get(point.point_id);
+                const status = row ? SQCore.normalizeStatus(row.status) : '未评估';
+                if (status === '未评估') qResult.assessment_complete = false;
+                qResult.point_results.push({ ...point, status, reason: row ? String(row.reason || '') : '模型未返回该得分点' });
             }
-        } catch (e) {
-            log(`  ⚠️ 题目 ${question.q_num} 比对失败: ${e.message}`, 'error');
-            for (const p of question.mark_points) qResult.point_results.push({ point_id: p.point_id, description: p.description, status: '错误', reason: 'AI比对异常' });
+        } catch (error) {
+            qResult.assessment_complete = false;
+            log(`  ⚠️ 题目 ${question.q_num} 未能完成评估：${error.message}`, 'error');
+            qResult.point_results = question.mark_points.map(point => ({ ...point, status: '未评估', reason: 'API或解析异常' }));
         }
         completed++;
-        setProgress(60 + (completed / totalQ) * 35, `AI 并发比对中 (${completed}/${totalQ})...`);
+        setProgress(62 + (completed / msStructure.length) * 32, `AI 判分中 (${completed}/${msStructure.length})...`);
         return qResult;
-    });
-
-    const results = await Promise.all(promises);
-    results.sort((a, b) => msStructure.findIndex(q => q.q_num === a.q_num) - msStructure.findIndex(q => q.q_num === b.q_num));
-    return results;
+    }, signal());
 }
-
-// ===================== 渲染结果 =====================
-function escHtml(s) { return SQCore.escHtml(s); }
-function badgeHtml(status) { return SQCore.badgeHtml(status); }
 
 function renderResults(results) {
     const container = $('resultsContainer');
     container.innerHTML = '';
-
-    for (const q of results) {
-        const gotPoints = q.point_results.filter(p => p.status === '明确正确').length;
-        const possiblePoints = q.point_results.filter(p => p.status === '疑似正确').length;
-
+    for (const question of results) {
+        const score = SQCore.scoreQuestion(question);
         const card = document.createElement('div');
-        card.className = 'question-card';
-        card.innerHTML = `
-            <div class="question-header" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'">
-                <span class="question-title">题目 ${escHtml(q.q_num)}</span>
-                <span class="question-score">预计 ${gotPoints}${possiblePoints > 0 ? '+' + possiblePoints + '?' : ''} / ${q.total_marks} 分</span>
-            </div>
-            <div class="question-body">
-                <div class="student-answer-box"><strong>你的答案：</strong>${escHtml(q.student_answer)}</div>
-                <div style="margin-top:0.8rem;">
-                    ${q.point_results.map(pr => `
-                    <div class="mark-point-row">
-                        <div class="mp-description"><strong>得分点</strong>${escHtml(pr.description)}</div>
-                        <div class="mp-status">${badgeHtml(pr.status)}</div>
-                        <div class="mp-reason">${escHtml(pr.reason)}</div>
-                    </div>`).join('')}
-                </div>
-            </div>`;
+        card.className = `question-card${score.incomplete ? ' incomplete' : ''}`;
+        const rules = question.point_results.map(point => {
+            const award = score.awards[point.point_id] || 0;
+            const rule = [point.mark_type, point.depends_on?.length ? `依赖 ${point.depends_on.join(', ')}` : '', point.group_id ? `组上限 ${point.group_max}` : ''].filter(Boolean).join(' · ');
+            return `<div class="mark-point-row"><div class="mp-description"><strong>${SQCore.escHtml(point.point_id)} · ${SQCore.escHtml(rule)}</strong>${SQCore.escHtml(point.description)}</div><div class="mp-status">${SQCore.badgeHtml(point.status)}<small>计 ${award} 分</small></div><div class="mp-reason">${SQCore.escHtml(point.reason)}</div></div>`;
+        }).join('');
+        card.innerHTML = `<button type="button" class="question-header"><span class="question-title">题目 ${SQCore.escHtml(question.q_num)}</span><span class="question-score">${score.incomplete ? '评估未完成 · ' : ''}预计 ${score.got}${score.possible ? `+${score.possible}?` : ''} / ${score.max} 分</span></button><div class="question-body"><div class="student-answer-box"><strong>答案转录：</strong>${SQCore.escHtml(question.student_answer)}</div><div class="mark-points">${rules}</div></div>`;
+        card.querySelector('.question-header').addEventListener('click', () => {
+            const body = card.querySelector('.question-body');
+            body.hidden = !body.hidden;
+        });
         container.appendChild(card);
     }
-
     const report = SQCore.computeReport(results);
-    $('totalScore').textContent = report.totalGot;
+    $('totalScore').textContent = report.incomplete ? `${report.totalGot}+?` : report.totalGot;
     $('maxScore').textContent = report.totalMax;
     $('scoreRate').textContent = report.rate;
+    $('incompleteWarning').style.display = report.incomplete ? 'block' : 'none';
+    if (report.incomplete) $('incompleteWarning').textContent = `有 ${report.incompleteQuestions} 道题未完成评估；已确认得分仅是下限，不计算得分率。请重试。`;
 }
 
-// ===================== 主流水线 =====================
-async function runGradingPipeline() {
-    $('sectionProgress').style.display = 'block';
-    $('sectionProgress').scrollIntoView({ behavior: 'smooth' });
-    $('progressIcon').className = 'fas fa-spinner fa-spin';
+async function resolvePaperBuffer(type) {
+    const manual = type === 'ms' ? state.manualMsBuf : state.manualQpBuf;
+    const label = type.toUpperCase();
+    if (manual) { log(`  ✅ 使用手动上传的 ${label}`, 'success'); return manual; }
+    if (!AppConfig.getProxyUrl()) throw new Error(`未配置下载代理且未手动上传 ${label}。请上传 ${label} 后重试。`);
+    try { return await fetchPdfViaProxy(buildBehUrl(type), label); }
+    catch (error) { throw new Error(`${label} 自动下载失败（${error.message}）。请手动上传后重试。`); }
+}
 
+async function runGradingPipeline() {
+    state.runController = new AbortController();
+    $('progressLog').innerHTML = '';
+    $('sectionProgress').style.display = 'block';
+    $('sectionResults').style.display = 'none';
+    $('progressIcon').className = 'fas fa-spinner fa-spin';
+    $('startGradingBtn').disabled = true;
+    $('cancelGradingBtn').style.display = 'inline-flex';
     try {
         setPipelineStep(3);
-        setProgress(5, '正在准备 Mark Scheme...');
-
-        let msBuf = state.manualMsBuf || null;
-        if (!msBuf) {
-            if (!AppConfig.getProxyUrl()) {
-                throw new Error('未配置下载代理，且未手动上传 MS。请在「配置」中填写代理，或使用「手动上传 MS」。');
-            }
-            try {
-                msBuf = await fetchPdfViaProxy(buildBehUrl('ms'), 'MS');
-            } catch (e) {
-                throw new Error(`MS 自动下载失败 (${e.message})。请使用「手动上传 MS」按钮上传后重试。`);
-            }
-        } else {
-            log('  ✅ 使用手动上传的 MS', 'success');
-        }
-
-        setProgress(10, '正在智能解析 MS 结构...');
-        log('🖼️ 正在混合提取 MS PDF（文本+图片智能感知）...', 'info');
-        state.msPages = await pdfToHybrid(msBuf, 1.5, true);
-        log(`  MS 裁剪后共保留 ${state.msPages.length} 页`, 'info');
+        setProgress(4, '正在准备 QP 与 MS...');
+        const msBuffer = await resolvePaperBuffer('ms');
+        const qpBuffer = await resolvePaperBuffer('qp');
+        state.msPages = await pdfToHybrid(msBuffer, 1.5, true, 'MS');
+        state.qpPages = await pdfToHybrid(qpBuffer, 1.5, false, 'QP');
+        if (!state.msPages.length || !state.qpPages.length) throw new Error('QP 或 MS 未保留任何有效页面。');
 
         setPipelineStep(4);
-        setProgress(15, 'AI 正在解析 MS 得分点...');
-        const msStructure = await parseMarkScheme(state.msPages);
-        log(`  ✅ MS 解析完成，共识别 ${msStructure.length} 道题`, 'success');
-        if (msStructure.length === 0) throw new Error('MS 解析结果为空，请检查所选试卷是否含结构题 MS，或更换上传文件。');
-        state.msStructure = msStructure;
+        setProgress(15, 'AI 正在解析 MS 规则...');
+        state.msStructure = await parseMarkScheme(state.msPages);
+        if (!state.msStructure.length) throw new Error('MS 解析结果为空。');
+        const invalidMsQuestion = state.msStructure.find(question => question.total_marks <= 0 || !question.mark_points.length);
+        if (invalidMsQuestion) throw new Error(`MS 题目 ${invalidMsQuestion.q_num} 的分值或得分点不完整；为避免错误计分，本次停止。`);
+        setProgress(32, 'AI 正在解析 QP 题干...');
+        state.qpStructure = await parseQuestionPaper(state.qpPages);
+        if (!Object.keys(state.qpStructure).length) throw new Error('QP 解析结果为空。');
+        setProgress(47, 'AI 正在识别答卷...');
+        state.userAnswers = await extractUserAnswers(state.userPages, state.msStructure);
+        if (!Object.keys(state.userAnswers).length) throw new Error('答卷识别结果为空；为避免把处理失败当作未作答，本次不生成报告。');
 
-        setProgress(35, 'AI 正在识别用户答卷...');
-        const userAnswers = await extractUserAnswers(state.userPages, msStructure);
-        log(`  ✅ 答卷识别完成，共识别 ${Object.keys(userAnswers).length} 道题`, 'success');
-        state.userAnswers = userAnswers;
-
-        setProgress(60, 'AI 逐点比对...');
-        const compResults = await compareAnswers(msStructure, userAnswers);
-        setProgress(95, '生成报告...');
-
+        setProgress(62, 'AI 正在逐题判分...');
+        const results = await compareAnswers(state.msStructure, state.userAnswers, state.qpStructure);
+        setProgress(96, '正在生成报告...');
+        renderResults(results);
         setPipelineStep(5);
-        setProgress(100, '完成！');
+        setProgress(100, '完成');
         $('progressIcon').className = 'fas fa-check-circle';
         $('sectionResults').style.display = 'block';
         $('sectionResults').scrollIntoView({ behavior: 'smooth' });
-        renderResults(compResults);
-    } catch (e) {
-        log(`❌ 错误: ${e.message}`, 'error');
+    } catch (error) {
+        if (error.name === 'AbortError' || signal()?.aborted) {
+            log('⏹️ 批改已取消，没有生成不完整报告。', 'info');
+            $('progressTitle').textContent = '已取消';
+        } else {
+            state.runController?.abort();
+            log(`❌ ${error.message}`, 'error');
+            $('progressTitle').textContent = '批改失败；未生成不完整报告';
+        }
         $('progressIcon').className = 'fas fa-times-circle';
-        $('progressTitle').textContent = '批改失败，请检查上方错误信息';
+    } finally {
+        state.runController = null;
+        $('cancelGradingBtn').style.display = 'none';
+        updateStartButton();
     }
 }
 
-// ===================== UI 初始化 =====================
+function paperIdentityFromForm() {
+    return [$('eg-level').value, $('eg-subject').value, $('eg-year').value, $('eg-season').value, $('eg-paper').value].join(':');
+}
+
+function resetArtifactUI() {
+    for (const id of ['manualMsInput', 'manualQpInput', 'pdfInput', 'imgInput']) if ($(id)) $(id).value = '';
+    $('manualMsStatus').textContent = '点击或拖入 MS PDF 文件';
+    $('manualQpStatus').textContent = '点击或拖入 QP PDF 文件';
+    document.querySelectorAll('.paper-upload-label').forEach(label => { label.classList.remove('has-file'); label.querySelector('i').className = 'fas fa-cloud-upload-alt'; });
+    $('pdfPreviewInfo').style.display = 'none';
+    $('imgPreviewArea').innerHTML = '';
+    $('sectionResults').style.display = 'none';
+    $('sectionProgress').style.display = 'none';
+    $('incompleteWarning').style.display = 'none';
+}
+
+function clearPaperArtifacts() {
+    state.runController?.abort();
+    Object.assign(state, { userPages: [], msPages: [], qpPages: [], msStructure: null, qpStructure: null, userAnswers: null, manualMsBuf: null, manualQpBuf: null, paperConfirmed: false, confirmedPaperId: '' });
+    resetArtifactUI();
+    $('sectionUpload')?.classList.add('locked');
+    setPipelineStep(1);
+    updateStartButton();
+}
+
+function markSelectionDirty() {
+    if (state.paperConfirmed || state.userPages.length || state.manualMsBuf || state.manualQpBuf) clearPaperArtifacts();
+    else state.paperConfirmed = false;
+}
+
+function updateStartButton() {
+    const button = $('startGradingBtn');
+    if (button) button.disabled = Boolean(state.runController) || !state.paperConfirmed || state.userPages.length === 0;
+}
+
+function validatePdfBuffer(buffer, label) {
+    if (!SQCore.isPdfHeader(buffer.slice(0, 4))) throw new Error(`${label} 不是有效 PDF 文件`);
+}
+
+function bindPaperUpload(inputId, type) {
+    $(inputId).addEventListener('change', async event => {
+        const file = event.target.files[0];
+        if (!file) return;
+        const isMs = type === 'ms';
+        const status = $(isMs ? 'manualMsStatus' : 'manualQpStatus');
+        const label = event.target.closest('.paper-upload-row')?.querySelector('.paper-upload-label');
+        status.textContent = '正在加载...';
+        try {
+            const buffer = await file.arrayBuffer();
+            validatePdfBuffer(buffer, type.toUpperCase());
+            if (isMs) state.manualMsBuf = buffer; else state.manualQpBuf = buffer;
+            status.textContent = `✅ ${file.name} (${Math.round(buffer.byteLength / 1024)}KB) — 已就绪`;
+            label?.classList.add('has-file');
+            if (label?.querySelector('i')) label.querySelector('i').className = 'fas fa-check-circle';
+        } catch (error) {
+            status.textContent = `❌ ${error.message}`;
+        }
+    });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     AppConfig.initUI(refreshConfigState);
-
-    const configBanner = $('configBanner');
     const apiSelect = $('eg-api');
-
     function refreshConfigState() {
         const lines = AppConfig.availableVisionLines();
         apiSelect.innerHTML = '';
-        if (lines.length === 0) {
-            const opt = document.createElement('option');
-            opt.value = ''; opt.textContent = '（请先配置 API）';
-            apiSelect.appendChild(opt);
-        } else {
-            lines.forEach(l => {
-                const opt = document.createElement('option');
-                opt.value = l.key; opt.textContent = l.label;
-                apiSelect.appendChild(opt);
-            });
-        }
-        configBanner.style.display = AppConfig.isConfigured() ? 'none' : 'flex';
+        if (!lines.length) apiSelect.add(new Option('（请先配置 API）', ''));
+        else lines.forEach(line => apiSelect.add(new Option(line.label, line.key)));
+        $('configBanner').style.display = AppConfig.isConfigured() ? 'none' : 'flex';
     }
     refreshConfigState();
     if (!AppConfig.isConfigured()) AppConfig.openModal();
 
-    // 科目/试卷/年份
+    function populatePapers() {
+        const selected = $('eg-subject').selectedOptions[0];
+        $('eg-paper').innerHTML = '';
+        let papers = [];
+        try { papers = JSON.parse(selected?.dataset.papers || '[]'); } catch (_) {}
+        papers.forEach(paper => $('eg-paper').add(new Option(`Paper ${paper.n}, Variant ${paper.v}`, `${paper.n}${paper.v}`)));
+    }
     function populateSubjects() {
-        const lvl = $('eg-level').value;
-        const subj = $('eg-subject');
-        const subjects = SUBJECTS_DATA[lvl] || [];
-        subj.innerHTML = '';
-        subjects.forEach(s => {
-            const o = document.createElement('option');
-            o.value = s.code; o.dataset.peh = s.peh; o.dataset.name = s.name;
-            o.dataset.papers = JSON.stringify(s.papers);
-            o.textContent = `${s.name} (${s.code})`;
-            subj.appendChild(o);
+        $('eg-subject').innerHTML = '';
+        (SUBJECTS_DATA[$('eg-level').value] || []).forEach(subject => {
+            const option = new Option(`${subject.name} (${subject.code})`, subject.code);
+            option.dataset.peh = subject.peh;
+            option.dataset.name = subject.name;
+            option.dataset.papers = JSON.stringify(subject.papers);
+            $('eg-subject').add(option);
         });
         populatePapers();
     }
-    function populatePapers() {
-        const sel = $('eg-subject').options[$('eg-subject').selectedIndex];
-        const pp = $('eg-paper');
-        pp.innerHTML = '';
-        if (!sel) { return; }
-        let papers = [];
-        try { papers = JSON.parse(sel.dataset.papers || '[]'); } catch (e) {}
-        papers.forEach(p => {
-            const o = document.createElement('option');
-            o.value = `${p.n}${p.v}`; o.textContent = `Paper ${p.n}, Variant ${p.v}`;
-            pp.appendChild(o);
-        });
-    }
     function populateYears() {
-        const yr = $('eg-year');
-        yr.innerHTML = '';
-        for (let y = 2025; y >= 2015; y--) {
-            const o = document.createElement('option');
-            o.value = y; o.textContent = y; yr.appendChild(o);
-        }
+        const current = new Date().getFullYear();
+        $('eg-year').innerHTML = '';
+        for (let year = current; year >= 2015; year--) $('eg-year').add(new Option(String(year), String(year)));
     }
-    $('eg-level').addEventListener('change', populateSubjects);
-    $('eg-subject').addEventListener('change', populatePapers);
+    $('eg-level').addEventListener('change', () => { markSelectionDirty(); populateSubjects(); });
+    $('eg-subject').addEventListener('change', () => { markSelectionDirty(); populatePapers(); });
+    for (const id of ['eg-year', 'eg-season', 'eg-paper']) $(id).addEventListener('change', markSelectionDirty);
     populateSubjects();
     populateYears();
 
-    // 确认试卷
-    $('paperSelectForm').addEventListener('submit', e => {
-        e.preventDefault();
-        if (!AppConfig.isConfigured()) { alert('请先配置 AI 接口信息。'); AppConfig.openModal(); return; }
-        const sel = $('eg-subject').options[$('eg-subject').selectedIndex];
-        if (!sel || !$('eg-paper').value) { alert('请先选择有效的科目和试卷。'); return; }
-        state.level = $('eg-level').value;
-        state.subjectCode = $('eg-subject').value;
-        state.subjectName = sel.dataset.name;
-        state.peh = sel.dataset.peh;
-        state.year = $('eg-year').value;
-        state.season = $('eg-season').value;
-        state.paper = $('eg-paper').value;
-        state.apiChoice = apiSelect.value || 'line1';
-        state.useDeepseek = $('eg-use-deepseek') ? $('eg-use-deepseek').checked : false;
-        state.paperConfirmed = true;
+    $('paperSelectForm').addEventListener('submit', event => {
+        event.preventDefault();
+        if (!AppConfig.isConfigured()) { alert('请先配置 AI 接口。'); AppConfig.openModal(); return; }
+        const selected = $('eg-subject').selectedOptions[0];
+        if (!selected || !$('eg-paper').value) { alert('请选择有效试卷。'); return; }
+        const newIdentity = paperIdentityFromForm();
+        if (state.confirmedPaperId && state.confirmedPaperId !== newIdentity) clearPaperArtifacts();
+        Object.assign(state, {
+            level: $('eg-level').value, subjectCode: $('eg-subject').value, subjectName: selected.dataset.name,
+            peh: selected.dataset.peh, year: $('eg-year').value, season: $('eg-season').value,
+            paper: $('eg-paper').value, apiChoice: apiSelect.value || 'line1',
+            useDeepseek: $('eg-use-deepseek').checked, paperConfirmed: true, confirmedPaperId: newIdentity
+        });
         setPipelineStep(2);
         unlockSection('sectionUpload');
+        updateStartButton();
     });
 
-    // Tab 切换
-    window.switchTab = (tab) => {
+    $('tabPdf').addEventListener('click', () => switchTab('pdf'));
+    $('tabImages').addEventListener('click', () => switchTab('images'));
+    $('choosePdfBtn').addEventListener('click', () => $('pdfInput').click());
+    $('chooseImagesBtn').addEventListener('click', () => $('imgInput').click());
+    function switchTab(tab) {
         $('tabContentPdf').style.display = tab === 'pdf' ? '' : 'none';
         $('tabContentImages').style.display = tab === 'images' ? '' : 'none';
         $('tabPdf').classList.toggle('active', tab === 'pdf');
         $('tabImages').classList.toggle('active', tab === 'images');
-    };
+    }
 
-    // PDF 上传
-    $('pdfInput').addEventListener('change', async e => {
-        const file = e.target.files[0];
+    $('pdfInput').addEventListener('change', async event => {
+        const file = event.target.files[0];
         if (!file) return;
         $('pdfPreviewInfo').style.display = 'block';
-        $('pdfPreviewInfo').textContent = `已选择: ${file.name}，正在渲染...`;
-        const buf = await file.arrayBuffer();
-        state.userPages = await pdfToImages(buf, 1.5, false, '答卷');
-        $('pdfPreviewInfo').textContent = `✅ 已加载 ${file.name}，裁剪后保留 ${state.userPages.length} 页`;
-        $('startGradingBtn').disabled = false;
-    });
-
-    // 图片上传
-    $('imgInput').addEventListener('change', async e => {
-        const files = Array.from(e.target.files);
-        state.userPages = await imagesToBase64List(files);
-        const grid = $('imgPreviewArea');
-        grid.innerHTML = '';
-        files.forEach((f, i) => {
-            const img = document.createElement('img');
-            img.src = state.userPages[i]; img.alt = `Page ${i + 1}`;
-            grid.appendChild(img);
-        });
-        $('startGradingBtn').disabled = false;
-    });
-
-    // 拖拽
-    ['pdfDropzone', 'imgDropzone'].forEach(id => {
-        const el = $(id);
-        if (!el) return;
-        el.addEventListener('dragover', e => { e.preventDefault(); el.classList.add('dragging'); });
-        el.addEventListener('dragleave', () => el.classList.remove('dragging'));
-        el.addEventListener('drop', e => {
-            e.preventDefault(); el.classList.remove('dragging');
-            const files = e.dataTransfer.files;
-            if (id === 'pdfDropzone' && files[0]?.type === 'application/pdf') {
-                $('pdfInput').files = files; $('pdfInput').dispatchEvent(new Event('change'));
-            } else if (id === 'imgDropzone') {
-                $('imgInput').files = files; $('imgInput').dispatchEvent(new Event('change'));
-            }
-        });
-    });
-
-    // 手动上传 MS
-    $('manualMsInput').addEventListener('change', async e => {
-        const file = e.target.files[0];
-        if (!file) return;
-        const statusEl = $('manualMsStatus');
-        const labelEl = document.querySelector('.ms-upload-label');
-        statusEl.textContent = '正在加载...';
+        $('pdfPreviewInfo').textContent = `正在渲染 ${file.name}...`;
         try {
-            state.manualMsBuf = await file.arrayBuffer();
-            statusEl.textContent = `✅ ${file.name} (${Math.round(state.manualMsBuf.byteLength / 1024)}KB) — 已就绪`;
-            if (labelEl) { labelEl.classList.add('has-file'); labelEl.querySelector('i').className = 'fas fa-check-circle'; }
-        } catch (err) {
-            statusEl.textContent = '❌ 读取失败，请重试';
+            const buffer = await file.arrayBuffer();
+            validatePdfBuffer(buffer, '答卷');
+            state.userPages = await pdfToAnswerImages(buffer);
+            if (!state.userPages.length) throw new Error('答卷未保留任何有效页面');
+            $('pdfPreviewInfo').textContent = `✅ 已加载 ${file.name}，保留 ${state.userPages.length} 页`;
+        } catch (error) {
+            state.userPages = [];
+            $('pdfPreviewInfo').textContent = `❌ ${error.message}`;
         }
+        updateStartButton();
     });
 
-    // 开始批改
+    $('imgInput').addEventListener('change', async event => {
+        const files = Array.from(event.target.files).filter(file => file.type.startsWith('image/'));
+        state.userPages = await imagesToPages(files);
+        $('imgPreviewArea').innerHTML = '';
+        state.userPages.forEach(page => {
+            const image = document.createElement('img'); image.src = page.content; image.alt = `Page ${page.pageNumber}`; $('imgPreviewArea').appendChild(image);
+        });
+        updateStartButton();
+    });
+
+    for (const id of ['pdfDropzone', 'imgDropzone']) {
+        const element = $(id);
+        element.addEventListener('dragover', event => { event.preventDefault(); element.classList.add('dragging'); });
+        element.addEventListener('dragleave', () => element.classList.remove('dragging'));
+        element.addEventListener('drop', event => {
+            event.preventDefault(); element.classList.remove('dragging');
+            const files = event.dataTransfer.files;
+            if (id === 'pdfDropzone' && files[0]?.type === 'application/pdf') { $('pdfInput').files = files; $('pdfInput').dispatchEvent(new Event('change')); }
+            if (id === 'imgDropzone') { $('imgInput').files = files; $('imgInput').dispatchEvent(new Event('change')); }
+        });
+    }
+
+    bindPaperUpload('manualMsInput', 'ms');
+    bindPaperUpload('manualQpInput', 'qp');
     $('startGradingBtn').addEventListener('click', () => {
-        if (!state.paperConfirmed) { alert('请先确认试卷！'); return; }
-        if (state.userPages.length === 0) { alert('请先上传答卷！'); return; }
-        setPipelineStep(3);
+        if (!state.paperConfirmed) return alert('请先确认试卷。');
+        if (!state.userPages.length) return alert('请先上传答卷。');
         runGradingPipeline();
     });
+    $('cancelGradingBtn').addEventListener('click', () => state.runController?.abort());
+    updateStartButton();
 });
