@@ -1,0 +1,21 @@
+{
+  "php": "runtime checks passed",
+  "coverage": [
+    "authentication",
+    "array-valued query errors",
+    "protocol/host/port guards",
+    "CORS/cache variation",
+    "non-global address rejection",
+    "canonical and multiple DNS addresses",
+    "CDN CNAME resolution with loop/private-address rejection",
+    "isolated limiter deployments",
+    "bucket rollover",
+    "bounded Retry-After",
+    "invalid environment settings"
+  ],
+  "trustedLocalTLS": [
+    "certificate and hostname verified",
+    "first address unavailable -> alternate address succeeds",
+    "slow response body hits transfer timeout"
+  ]
+}

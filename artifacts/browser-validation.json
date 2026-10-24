@@ -1,0 +1,19 @@
+{
+  "browser": "Chromium",
+  "checks": [
+    "real PDF worker and vector rendering",
+    "full pipeline",
+    "failure warning",
+    "targeted retry",
+    "JSON export without credentials",
+    "repeat grading",
+    "cancel preserves clearly labelled prior report",
+    "paper reset",
+    "photo decoding",
+    "mobile layout",
+    "stale upload invalidation",
+    "no browser exceptions"
+  ],
+  "apiFixtureRequests": 16,
+  "gradeCalls": 7
+}

@@ -1,0 +1,18 @@
+{
+  "checks": [
+    "actual two-page PDF.js rendering",
+    "out-of-order page completion stays ordered",
+    "OCR page provenance overrides hallucinated metadata",
+    "parent/child continuation images reach final grader",
+    "padded point ID accepted",
+    "failed full rerun retains report and exports provenance",
+    "cancelled full rerun retains report",
+    "DeepSeek missing config avoids silent paid fallback",
+    "reduced-motion JS scrolling",
+    "modal background is inert",
+    "cross-source same-file reselection",
+    "multi-PDF drop rejected explicitly",
+    "no page errors"
+  ],
+  "firstRunRequests": 6
+}

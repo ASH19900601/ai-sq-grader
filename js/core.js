@@ -28,7 +28,7 @@
             'MS之外': 'badge-extra',
             '未评估': 'badge-unassessed'
         };
-        return `<span class="badge ${map[status] || 'badge-unassessed'}">${escHtml(status)}</span>`;
+        return `<span class="badge ${(Object.hasOwn(map, status) ? map[status] : 'badge-unassessed')}">${escHtml(status)}</span>`;
     }
 
     function buildBehUrl(state, type) {
@@ -44,63 +44,77 @@
         return h.length >= 4 && h[0] === 0x25 && h[1] === 0x50 && h[2] === 0x44 && h[3] === 0x46;
     }
 
-    function rescueArray(text, key, validator) {
-        const keyMatch = new RegExp(`"${key}"\\s*:\\s*\\[`).exec(text);
-        if (!keyMatch) return [];
-        const start = keyMatch.index + keyMatch[0].length;
-        let objectStart = -1;
-        let depth = 0;
-        let inString = false;
-        let escaped = false;
-        const values = [];
-        for (let i = start; i < text.length; i++) {
-            const ch = text[i];
-            if (inString) {
-                if (escaped) escaped = false;
-                else if (ch === '\\') escaped = true;
-                else if (ch === '"') inString = false;
-                continue;
-            }
-            if (ch === '"') { inString = true; continue; }
-            if (ch === '{') {
-                if (depth === 0) objectStart = i;
-                depth++;
-            } else if (ch === '}' && depth > 0) {
-                depth--;
-                if (depth === 0 && objectStart >= 0) {
-                    try {
-                        const value = JSON.parse(text.slice(objectStart, i + 1));
-                        if (validator(value)) values.push(value);
-                    } catch (_) {}
-                    objectStart = -1;
-                }
-            } else if (ch === ']' && depth === 0) break;
-        }
-        return values;
-    }
-
     function safeParseJSON(content, data = {}, errorPrefix = 'AI') {
+        if (data?.choices?.[0]?.finish_reason === 'length') throw new Error(`${errorPrefix} 输出被截断，请降低单批页数或增加输出上限。`);
+        const finish = data?.choices?.[0]?.finish_reason;
+        if (finish && finish !== 'stop') throw new Error(`${errorPrefix} 未正常完成输出（${finish}）。`);
         const text = String(content || '').trim();
         const reasoningContent = data?.choices?.[0]?.message?.reasoning_content;
         if (!text && errorPrefix === 'DeepSeek' && reasoningContent) {
             throw new Error(`${errorPrefix} 思考超时，未输出任何结果 (Token限制)。`);
         }
         try { return JSON.parse(text); } catch (_) {}
-        const fenced = text.match(/```(?:json)?\s*([\s\S]+?)```/i);
+        const fenced = text.match(/^```(?:json)?\s*([\s\S]+?)```\s*$/i);
         if (fenced) {
             try { return JSON.parse(fenced[1]); } catch (_) {}
         }
-        const source = fenced ? fenced[1] : text;
-        const specs = [
-            ['answers', v => typeof v?.q_num === 'string' && Object.hasOwn(v, 'answer_text')],
-            ['results', v => typeof v?.point_id === 'string' && typeof v?.status === 'string'],
-            ['questions', v => typeof v?.q_num === 'string' && (Object.hasOwn(v, 'total_marks') || Array.isArray(v?.mark_points))]
-        ];
-        for (const [key, validator] of specs) {
-            const rescued = rescueArray(source, key, validator);
-            if (rescued.length) return { [key]: rescued };
+        throw new Error(`${errorPrefix} 返回的 JSON 不完整或无效，请重试。`);
+    }
+
+    function questionId(value) {
+        return String(value ?? '').normalize('NFKC').replace(/\s+/g, '').replace(/[（]/g, '(').replace(/[）]/g, ')').toLowerCase();
+    }
+
+    function validateRows(rows, key, phase = '') {
+        if (!Array.isArray(rows)) throw new Error(`${key} 必须是数组`);
+        for (const row of rows) {
+            if (!row || typeof row !== 'object' || typeof row.q_num !== 'string' || !questionId(row.q_num)) throw new Error(`${key} 含无效题号`);
+            if ((key === 'answers' || phase === 'answers') && typeof row.answer_text !== 'string') throw new Error('答案缺少转录文本');
+            if ((phase === 'qp' || (!phase && key === 'questions' && !('total_marks' in row))) && (typeof row.question_text !== 'string' || !row.question_text.trim())) throw new Error('QP 缺少题干');
+            if (phase === 'ms' || (!phase && 'total_marks' in row)) {
+                if (row.mark_points?.length > 200) throw new Error('MS 单个小题超过 200 个得分点，请检查题号是否被错误合并');
+                if (!Number.isSafeInteger(row.total_marks) || row.total_marks <= 0 || !Array.isArray(row.mark_points) || !row.mark_points.length) throw new Error('MS 分值或得分点无效');
+                const ids = new Set();
+                for (const point of row.mark_points) {
+                    if (!point || typeof point.point_id !== 'string' || !point.point_id.trim() || ids.has(point.point_id.trim()) || typeof point.description !== 'string' || !point.description.trim()) throw new Error('MS 得分点缺失或重复');
+                    ids.add(point.point_id.trim());
+                    if (point.mark_type != null && !['M', 'A', 'B', 'SC', 'FT'].includes(String(point.mark_type).trim().toUpperCase())) throw new Error('MS 评分类型无效');
+                    for (const field of ['group_id', 'route_id', 'rule_notes']) if (point[field] != null && typeof point[field] !== 'string') throw new Error('MS 分组或规则文本无效');
+                    if (point.alternatives != null && (!Array.isArray(point.alternatives) || point.alternatives.some(value => typeof value !== 'string'))) throw new Error('MS 等价答案无效');
+                    if (point.group_max != null && !(typeof point.group_id === 'string' && point.group_id.trim())) throw new Error('MS 组上限缺少组编号');
+                    for (const flag of ['follow_through', 'not_from_wrong_working', 'ignore_subsequent_working']) if (point[flag] != null && typeof point[flag] !== 'boolean') throw new Error('MS 布尔评分规则无效');
+                    if (!Number.isSafeInteger(point.marks) || point.marks <= 0 || (point.group_max != null && (!Number.isSafeInteger(point.group_max) || point.group_max <= 0))) throw new Error('MS 得分点分值无效');
+                    if (point.depends_on != null && (!Array.isArray(point.depends_on) || point.depends_on.some(id => typeof id !== 'string' || !id.trim()))) throw new Error('MS 依赖关系无效');
+                }
+            }
         }
-        throw new Error(`${errorPrefix} 返回内容无法解析为 JSON: ${text.slice(-100)}`);
+        return rows;
+    }
+
+    function validateMarkScheme(questions) {
+        for (const q of questions) {
+            const byId = new Map(q.mark_points.map(p => [p.point_id, p]));
+            const groups = new Map();
+            for (const point of q.mark_points) if (point.group_id) {
+                if (!groups.has(point.group_id)) groups.set(point.group_id, null);
+                if (point.group_max != null) {
+                    const known = groups.get(point.group_id);
+                    if (known != null && known !== point.group_max) throw new Error(`MS ${q.q_num} 同组上限冲突`);
+                    groups.set(point.group_id, point.group_max);
+                }
+            }
+            if ([...groups.values()].some(cap => cap == null)) throw new Error(`MS ${q.q_num} 分组缺少上限`);
+            const done = new Set();
+            function visit(id, path = new Set()) {
+                if (!byId.has(id) || path.has(id)) throw new Error(`MS ${q.q_num} 存在缺失或循环依赖`);
+                if (done.has(id)) return;
+                path.add(id);
+                byId.get(id).depends_on.forEach(dep => visit(dep, path));
+                path.delete(id); done.add(id);
+            }
+            byId.forEach((_, id) => visit(id));
+        }
+        return questions;
     }
 
     function positiveNumber(value, fallback = 1) {
@@ -109,17 +123,17 @@
     }
 
     function normalizeMarkPoint(point, index = 0, qNum = '') {
-        const markType = String(point?.mark_type || 'B').toUpperCase();
+        const markType = String(point?.mark_type || 'B').trim().toUpperCase();
         return {
-            point_id: String(point?.point_id || `${qNum}-point-${index + 1}`),
+            point_id: String(point?.point_id || `${qNum}-point-${index + 1}`).trim(),
             description: String(point?.description || ''),
             mark_type: ['M', 'A', 'B', 'SC', 'FT'].includes(markType) ? markType : 'B',
             marks: positiveNumber(point?.marks, 1),
             alternatives: Array.isArray(point?.alternatives) ? point.alternatives.map(String) : [],
-            depends_on: Array.isArray(point?.depends_on) ? point.depends_on.map(String) : [],
-            group_id: point?.group_id ? String(point.group_id) : '',
+            depends_on: Array.isArray(point?.depends_on) ? [...new Set(point.depends_on.map(id => String(id).trim()))] : [],
+            group_id: point?.group_id ? String(point.group_id).trim() : '',
             group_max: point?.group_max == null ? null : positiveNumber(point.group_max, 1),
-            route_id: point?.route_id ? String(point.route_id) : '',
+            route_id: point?.route_id ? String(point.route_id).trim() : '',
             follow_through: Boolean(point?.follow_through || markType === 'FT'),
             not_from_wrong_working: Boolean(point?.not_from_wrong_working),
             ignore_subsequent_working: Boolean(point?.ignore_subsequent_working),
@@ -128,10 +142,10 @@
     }
 
     function mergeQuestions(allQuestions) {
-        const merged = new Map();
+        const merged = new Map(), suppliedFields = new Map();
         for (const raw of allQuestions || []) {
             if (!raw || !raw.q_num) continue;
-            const qNum = String(raw.q_num);
+            const qNum = questionId(raw.q_num);
             if (!merged.has(qNum)) {
                 merged.set(qNum, {
                     q_num: qNum,
@@ -141,14 +155,30 @@
                 });
             }
             const target = merged.get(qNum);
-            target.total_marks = Math.max(target.total_marks, Math.max(0, Number(raw.total_marks) || 0));
+            const incomingTotal = Math.max(0, Number(raw.total_marks) || 0);
+            if (target.total_marks && incomingTotal && target.total_marks !== incomingTotal) throw new Error(`MS ${qNum} 跨页满分冲突，请复核后重试`);
+            target.total_marks = target.total_marks || incomingTotal;
             target.general_rules.push(...(Array.isArray(raw.general_rules) ? raw.general_rules.map(String) : []));
-            const existingIds = new Set(target.mark_points.map(p => p.point_id));
+            const existing = new Map(target.mark_points.map(p => [p.point_id, p]));
             for (const [index, rawPoint] of (raw.mark_points || []).entries()) {
                 const point = normalizeMarkPoint(rawPoint, index, qNum);
-                if (!existingIds.has(point.point_id)) {
+                const previous = existing.get(point.point_id);
+                if (!previous) {
                     target.mark_points.push(point);
-                    existingIds.add(point.point_id);
+                    existing.set(point.point_id, point);
+                    suppliedFields.set(qNum + '\0' + point.point_id, new Set(Object.keys(rawPoint)));
+                } else {
+                    const supplied = suppliedFields.get(qNum + '\0' + point.point_id) || new Set();
+                    // A repeated point may add rules on a continuation page; never discard them.
+                    for (const field of ['marks', 'mark_type', 'group_id', 'group_max', 'route_id']) {
+                        if (rawPoint[field] != null && supplied.has(field) && previous[field] != null && previous[field] !== '' && previous[field] !== point[field]) throw new Error(`MS ${qNum} 得分点 ${point.point_id} 的 ${field} 冲突`);
+                        if (rawPoint[field] != null) previous[field] = point[field];
+                        if (Object.hasOwn(rawPoint, field)) supplied.add(field);
+                    }
+                    previous.depends_on = [...new Set([...previous.depends_on, ...point.depends_on])];
+                    previous.alternatives = [...new Set([...previous.alternatives, ...point.alternatives])];
+                    for (const field of ['description', 'rule_notes']) if (point[field] && !previous[field].split('\n').includes(point[field])) previous[field] += (previous[field] ? '\n' : '') + point[field];
+                    for (const field of ['follow_through', 'not_from_wrong_working', 'ignore_subsequent_working']) previous[field] ||= point[field];
                 }
             }
         }
@@ -157,88 +187,132 @@
     }
 
     function mergeAnswers(allAnswers) {
-        const answers = {};
+        const answers = Object.create(null), fragments = new Map();
+        const rank = { high: 0, medium: 1, low: 2 };
         for (const a of allAnswers || []) {
             if (!a || !a.q_num) continue;
-            const qNum = String(a.q_num);
-            if (!answers[qNum]) answers[qNum] = { q_num: qNum, answer_text: '', confidence: a.confidence || 'low', source_pages: [] };
+            const qNum = questionId(a.q_num);
+            const confidence = Object.hasOwn(rank, a.confidence) ? a.confidence : 'low';
+            if (!answers[qNum]) answers[qNum] = { q_num: qNum, answer_text: '', confidence, source_pages: [] };
             const fragment = String(a.answer_text || '').trim();
-            if (fragment && fragment !== '（未作答）') answers[qNum].answer_text += (answers[qNum].answer_text ? '\n' : '') + fragment;
-            const sourcePages = Array.isArray(a.source_pages) ? a.source_pages : [a.source_page];
-            for (const page of sourcePages) if (Number.isInteger(page) && !answers[qNum].source_pages.includes(page)) answers[qNum].source_pages.push(page);
-            if (a.confidence === 'low') answers[qNum].confidence = 'low';
-            else if (a.confidence === 'medium' && answers[qNum].confidence !== 'low') answers[qNum].confidence = 'medium';
+            const sourcePages = (Array.isArray(a.source_pages) ? a.source_pages : [a.source_page]).filter(page => Number.isInteger(page) && page >= 0);
+            const fragmentId = JSON.stringify([qNum, [...new Set(sourcePages)].sort((a,b) => a-b), fragment]);
+            if (fragment && fragment !== '（未作答）' && !fragments.has(fragmentId)) {
+                answers[qNum].answer_text += (answers[qNum].answer_text ? '\n' : '') + fragment;
+                fragments.set(fragmentId, true);
+            }
+            for (const page of sourcePages) if (!answers[qNum].source_pages.includes(page)) answers[qNum].source_pages.push(page);
+            if (rank[confidence] > rank[answers[qNum].confidence]) answers[qNum].confidence = confidence;
         }
         for (const answer of Object.values(answers)) if (!answer.answer_text) answer.answer_text = '（未作答）';
         return answers;
     }
 
     function mergeQuestionContexts(allQuestions) {
-        const contexts = {};
+        const contexts = Object.create(null), fragments = new Map();
         for (const q of allQuestions || []) {
             if (!q?.q_num) continue;
-            const qNum = String(q.q_num);
-            if (!contexts[qNum]) contexts[qNum] = { q_num: qNum, question_text: '', source_pages: [] };
+            const qNum = questionId(q.q_num);
+            if (!contexts[qNum]) { contexts[qNum] = { q_num: qNum, question_text: '', source_pages: [] }; fragments.set(qNum, new Set()); }
             const text = String(q.question_text || '').trim();
-            if (text && !contexts[qNum].question_text.includes(text)) contexts[qNum].question_text += (contexts[qNum].question_text ? '\n' : '') + text;
+            if (text && !fragments.get(qNum).has(text)) { contexts[qNum].question_text += (contexts[qNum].question_text ? '\n' : '') + text; fragments.get(qNum).add(text); }
             for (const page of (Array.isArray(q.source_pages) ? q.source_pages : [])) {
-                if (Number.isInteger(page) && !contexts[qNum].source_pages.includes(page)) contexts[qNum].source_pages.push(page);
+                if (Number.isInteger(page) && page >= 0 && !contexts[qNum].source_pages.includes(page)) contexts[qNum].source_pages.push(page);
             }
         }
         return contexts;
     }
 
-    function classifyPdfPage({ text = '', hasImages = false, isMs = false } = {}) {
+    function classifyPdfPage({ text = '', hasImages = false, hasVectors = false, isMs = false } = {}) {
         const normalized = String(text).replace(/\s+/g, ' ').trim();
         const upper = normalized.toUpperCase();
         const isMsCover = upper.includes('MAXIMUM MARK') && upper.includes('MARK SCHEME');
         const isQpCover = (upper.includes('CANDIDATE') && upper.includes('NUMBER')) || (upper.includes('INSTRUCTIONS') && upper.includes('INFORMATION'));
         const isRules = upper.includes('GENERIC MARKING PRINCIPLE') || upper.includes('CALCULATION SPECIFIC GUIDANCE');
-        const explicitBlank = upper.includes('BLANK PAGE') && normalized.length < 500 && !hasImages;
-        const skip = explicitBlank || (isMs ? (isMsCover || isRules) : isQpCover);
+        const explicitBlank = /^(?:(?:THIS (?:IS A |PAGE IS ))?(?:INTENTIONALLY )?BLANK PAGE|THIS PAGE IS (?:INTENTIONALLY )?BLANK)[.!]?$/.test(upper) && !hasImages && !hasVectors;
+        const skip = explicitBlank; // Preserve covers with annotations and generic rules: omission is irreversible.
         const reason = explicitBlank ? '明确标注的空白页' : (isMsCover || isQpCover ? '封面' : (isRules ? '通用评分规则页' : ''));
-        return { skip, reason, mode: !hasImages && normalized.length > 50 ? 'text' : 'image' };
+        return { skip, reason, mode: !hasImages && !hasVectors && normalized.length > 50 ? 'text' : 'image' };
     }
 
     function normalizeStatus(status) {
-        return ASSESSED_STATUSES.has(status) ? status : '未评估';
+        const value = typeof status === 'string' ? status.normalize('NFKC').trim() : '';
+        return ASSESSED_STATUSES.has(value) ? value : '未评估';
     }
 
     function scoreQuestion(question) {
         const results = Array.isArray(question?.point_results) ? question.point_results : [];
-        const byId = new Map(results.map((point, index) => {
-            const normalized = { ...normalizeMarkPoint(point, index, question?.q_num || ''), ...point };
-            normalized.status = normalizeStatus(point.status);
-            return [normalized.point_id, normalized];
-        }));
-        const memo = new Map();
-        function isEligible(point, visiting = new Set()) {
-            if (memo.has(point.point_id)) return memo.get(point.point_id);
-            if (visiting.has(point.point_id) || point.status !== '明确正确') return false;
-            visiting.add(point.point_id);
-            const eligible = (point.depends_on || []).every(id => byId.has(id) && isEligible(byId.get(id), visiting));
-            visiting.delete(point.point_id);
-            memo.set(point.point_id, eligible);
-            return eligible;
+        const byId = new Map();
+        let invalid = false;
+        for (const [index, raw] of results.entries()) {
+            const point = { ...normalizeMarkPoint(raw, index, question?.q_num), status: normalizeStatus(raw?.status) };
+            const previous = byId.get(point.point_id);
+            if (previous && JSON.stringify(previous) !== JSON.stringify(point)) {
+                previous.status = '未评估'; invalid = true;
+            } else if (!previous) byId.set(point.point_id, point);
         }
-        const awards = {};
-        const groupUsed = new Map();
-        let got = 0;
-        for (const point of byId.values()) {
-            let awarded = isEligible(point) ? positiveNumber(point.marks, 1) : 0;
-            if (awarded > 0 && point.group_id && point.group_max != null) {
-                const used = groupUsed.get(point.group_id) || 0;
-                awarded = Math.max(0, Math.min(awarded, positiveNumber(point.group_max, 1) - used));
-                groupUsed.set(point.group_id, used + awarded);
+        const points = [...byId.values()];
+        const max = Number.isFinite(Number(question?.total_marks)) ? Math.max(0, Number(question.total_marks)) : 0;
+        const groupCaps = new Map();
+        for (const p of points) if (p.group_id && p.group_max != null) groupCaps.set(p.group_id, Math.min(groupCaps.get(p.group_id) ?? Infinity, p.group_max));
+        const ordered = [], visited = new Set(), path = new Set();
+        function visit(point) {
+            if (path.has(point.point_id)) { invalid = true; return; }
+            if (visited.has(point.point_id)) return;
+            path.add(point.point_id);
+            for (const id of point.depends_on) {
+                if (!byId.has(id)) invalid = true;
+                else visit(byId.get(id));
             }
-            awards[point.point_id] = awarded;
-            got += awarded;
+            path.delete(point.point_id); visited.add(point.point_id); ordered.push(point);
         }
-        const max = Math.max(0, Number(question?.total_marks) || 0);
-        got = Math.min(got, max);
-        const possible = results.filter(p => p.status === '疑似正确').reduce((sum, p) => sum + positiveNumber(p.marks, 1), 0);
-        const incomplete = question?.assessment_complete === false || results.some(p => normalizeStatus(p.status) === '未评估');
-        return { got, max, possible: Math.min(possible, Math.max(0, max - got)), incomplete, awards };
+        [...points].sort((a,b) => a.point_id.localeCompare(b.point_id)).forEach(visit);
+        let limited = false, nodes = 0;
+        function allocate(includePossible, route) {
+            const awards = Object.create(null), used = new Map();
+            let best = { got: 0, awards: Object.create(null) };
+            const eligible = p => (p.status === '明确正确' || (includePossible && p.status === '疑似正确')) && (!p.route_id || p.route_id === route);
+            function search(index, got) {
+                if (++nodes > 200000) { limited = true; return; }
+                if (got > best.got) best = { got, awards: { ...awards } };
+                if (index === ordered.length || got >= max) return;
+                // Bound remaining score by remaining group budgets as well as the question cap.
+                let upper = got;
+                const remainingGroups = new Map();
+                for (let i = index; i < ordered.length; i++) {
+                    const p = ordered[i];
+                    if (!eligible(p)) continue;
+                    if (p.group_id && groupCaps.has(p.group_id)) remainingGroups.set(p.group_id, (remainingGroups.get(p.group_id) || 0) + p.marks);
+                    else upper += p.marks;
+                }
+                for (const [id, marks] of remainingGroups) upper += Math.min(marks, Math.max(0, groupCaps.get(id) - (used.get(id) || 0)));
+                if (Math.min(max, upper) <= best.got) return;
+                const point = ordered[index];
+                const dependenciesMet = point.depends_on.every(id => byId.has(id) && (awards[id] || 0) >= byId.get(id).marks);
+                let value = eligible(point) && dependenciesMet ? Math.min(point.marks, max - got) : 0;
+                if (point.group_id && groupCaps.has(point.group_id)) value = Math.min(value, Math.max(0, groupCaps.get(point.group_id) - (used.get(point.group_id) || 0)));
+                // Weighted points can share the last marks in a capped group. Try smaller
+                // allocations too, since freeing one mark may enable a more valuable dependency.
+                for (let amount = value; amount > 0; amount = Number.isSafeInteger(amount) ? amount - 1 : 0) {
+                    awards[point.point_id] = amount;
+                    if (point.group_id) used.set(point.group_id, (used.get(point.group_id) || 0) + amount);
+                    search(index + 1, got + amount);
+                    if (point.group_id) used.set(point.group_id, used.get(point.group_id) - amount);
+                    if (best.got >= max || nodes > 200000) break;
+                }
+                awards[point.point_id] = 0;
+                search(index + 1, got);
+                delete awards[point.point_id];
+            }
+            search(0, 0);
+            for (const p of points) if (!Object.hasOwn(best.awards, p.point_id)) best.awards[p.point_id] = 0;
+            return best;
+        }
+        const routes = [...new Set(points.map(p => p.route_id).filter(Boolean))].sort();
+        const best = possible => (routes.length ? routes : ['']).map(route => allocate(possible, route)).sort((a,b) => b.got - a.got)[0];
+        const score = best(false), potential = best(true);
+        const incomplete = invalid || limited || question?.assessment_complete === false || !points.length || points.some(p => p.status === '未评估');
+        return { got: score.got, max, possible: Math.max(0, potential.got - score.got), incomplete, awards: score.awards };
     }
 
     function computeReport(results) {
@@ -260,15 +334,21 @@
         const concurrency = Math.max(1, Math.floor(Number(limit) || 1));
         const output = new Array(list.length);
         let next = 0;
+        let failed = false;
         async function runner() {
             while (true) {
+                if (failed) return;
                 if (signal?.aborted) throw signal.reason || new Error('Operation cancelled');
                 const index = next++;
                 if (index >= list.length) return;
-                output[index] = await worker(list[index], index);
+                try { output[index] = await worker(list[index], index); } catch (error) { failed = true; throw error; }
             }
         }
-        await Promise.all(Array.from({ length: Math.min(concurrency, list.length) }, runner));
+        const workers = Array.from({ length: Math.min(concurrency, list.length) }, runner);
+        const settled = await Promise.allSettled(workers);
+        const rejection = settled.find(result => result.status === 'rejected');
+        if (rejection) throw rejection.reason;
+        if (signal?.aborted) throw signal.reason || new Error('Operation cancelled');
         return output;
     }
 
@@ -286,7 +366,7 @@
 
     return {
         escHtml, badgeHtml, buildBehUrl, isPdfHeader, safeParseJSON,
-        normalizeMarkPoint, mergeQuestions, mergeAnswers, mergeQuestionContexts,
+        questionId, validateRows, validateMarkScheme, normalizeMarkPoint, mergeQuestions, mergeAnswers, mergeQuestionContexts,
         classifyPdfPage, normalizeStatus, scoreQuestion, computeReport,
         mapWithConcurrency, parseRetryAfter, isRetryableStatus
     };

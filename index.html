@@ -3,21 +3,25 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src https: http:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src https: http:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; ">
     <meta name="referrer" content="no-referrer">
     <title>AI 结构题批改器 · Structured Question Grader</title>
     <meta name="description" content="结合 QP、原始答卷图像和复杂 Mark Scheme 规则的 CAIE 结构题 AI 批改器。">
     <link rel="stylesheet" href="vendor/fontawesome/css/all.min.css">
     <link rel="stylesheet" href="css/style.css">
-    <script src="vendor/pdfjs/pdf.min.js"></script>
 </head>
 <body>
+    <noscript><div class="startup-status" role="alert">此批改工具需要 JavaScript。请启用 JavaScript 后重新加载页面。</div></noscript>
+    <div id="startupStatus" class="startup-status" role="status" aria-live="polite">
+        <span id="startupMessage">正在加载批改工具。如果一直停留在这里，请通过 HTTP 服务打开页面，并检查浏览器是否允许 JavaScript。</span>
+        <button id="retryStartupBtn" class="btn-secondary" type="button" hidden>重新加载</button>
+    </div>
     <header class="site-header">
         <div class="brand"><i class="fas fa-robot"></i> AI SQ Grader</div>
         <button id="settingsBtn" class="header-btn" type="button" title="API 配置"><i class="fas fa-gear"></i> 配置</button>
     </header>
 
-    <main class="page essay-grader-page">
+    <main class="page essay-grader-page" id="mainContent">
         <section class="intro blog-hero">
             <div class="hero-copy">
                 <p class="eyebrow">AI Structured Q Grader</p>
@@ -77,34 +81,36 @@
             </div>
         </section>
 
-        <section class="grader-card glass-panel locked" id="sectionUpload">
+        <section class="grader-card glass-panel locked" id="sectionUpload" inert>
             <h2><i class="fas fa-file-upload"></i> 第二步：上传答卷</h2>
-            <p class="section-hint">支持 PDF 或多张 JPG/PNG。扫描件和只有手绘图的页面也会保留。</p>
-            <div class="upload-tabs">
-                <button type="button" class="tab-btn active" id="tabPdf"><i class="fas fa-file-pdf"></i> 上传 PDF</button>
-                <button type="button" class="tab-btn" id="tabImages"><i class="fas fa-images"></i> 上传多张照片</button>
+            <p class="section-hint">支持 PDF 或多张 JPG/PNG/WebP；每个文件最多 25 MiB，最多 100 页。扫描件和只有手绘图的页面也会保留。</p>
+            <div id="answerSourceInfo" class="upload-info" role="status" hidden></div>
+            <div class="upload-tabs" role="tablist" aria-label="答卷上传方式">
+                <button type="button" class="tab-btn active" id="tabPdf" role="tab" aria-selected="true" aria-controls="tabContentPdf" tabindex="0"><i class="fas fa-file-pdf"></i> 上传 PDF</button>
+                <button type="button" class="tab-btn" id="tabImages" role="tab" aria-selected="false" aria-controls="tabContentImages" tabindex="-1"><i class="fas fa-images"></i> 上传多张照片</button>
             </div>
-            <div id="tabContentPdf" class="tab-content">
+            <div id="tabContentPdf" class="tab-content" role="tabpanel" aria-labelledby="tabPdf">
                 <div class="dropzone" id="pdfDropzone">
                     <i class="fas fa-cloud-upload-alt dropzone-icon"></i><p>拖放 PDF 到此处，或点击选择</p>
                     <input type="file" id="pdfInput" accept=".pdf,application/pdf" hidden>
                     <button type="button" class="btn-upload" id="choosePdfBtn">选择 PDF 文件</button>
                 </div>
-                <div id="pdfPreviewInfo" class="upload-info" style="display:none"></div>
+                <div id="pdfPreviewInfo" class="upload-info" role="status" aria-live="polite" style="display:none"></div>
             </div>
-            <div id="tabContentImages" class="tab-content" style="display:none">
+            <div id="tabContentImages" class="tab-content" role="tabpanel" aria-labelledby="tabImages" style="display:none">
                 <div class="dropzone" id="imgDropzone">
                     <i class="fas fa-images dropzone-icon"></i><p>拖放多张图片到此处，顺序即页面顺序</p>
-                    <input type="file" id="imgInput" accept="image/*" multiple hidden>
+                    <input type="file" id="imgInput" accept="image/jpeg,image/png,image/webp" multiple hidden>
                     <button type="button" class="btn-upload" id="chooseImagesBtn">选择图片文件</button>
                 </div>
                 <div id="imgPreviewArea" class="img-preview-grid"></div>
             </div>
-            <div class="form-submit" style="margin-top:1.5rem"><button class="btn-generate" id="startGradingBtn" type="button" disabled><i class="fas fa-magic"></i> 开始 AI 批改</button></div>
+            <div class="form-submit" style="margin-top:1.5rem"><button class="btn-generate" id="startGradingBtn" type="button" aria-describedby="startHint" disabled><i class="fas fa-magic"></i> 开始 AI 批改</button></div>
+            <p id="startHint" class="start-hint" role="status" aria-live="polite">请先配置视觉接口并确认试卷，再上传答卷。</p>
         </section>
 
         <section class="grader-card glass-panel" id="sectionProgress" style="display:none">
-            <h2><i class="fas fa-spinner fa-spin" id="progressIcon"></i> <span id="progressTitle">正在处理...</span></h2>
+            <h2><i class="fas fa-spinner fa-spin" id="progressIcon"></i> <span id="progressTitle" role="status" aria-live="polite">正在处理...</span></h2>
             <div class="progress-log" id="progressLog"></div>
             <div class="progress-bar-wrap"><div class="progress-bar-fill" id="progressBarFill" style="width:0%"></div></div>
             <div class="form-submit" style="margin-top:1rem"><button type="button" class="btn-secondary" id="cancelGradingBtn" style="display:none"><i class="fas fa-stop"></i> 取消批改</button></div>
@@ -120,46 +126,50 @@
                 </div>
             </div>
             <div class="legend-row"><span class="badge badge-correct">明确正确</span><span class="badge badge-possible">疑似正确</span><span class="badge badge-wrong">错误</span><span class="badge badge-extra">MS之外</span><span class="badge badge-unassessed">未评估</span></div>
-            <div id="incompleteWarning" class="incomplete-warning" style="display:none"></div>
+            <div id="incompleteWarning" class="incomplete-warning" role="status" aria-live="polite" style="display:none"></div>
+            <div class="report-actions"><button id="retryFailedBtn" type="button" class="btn-secondary">重试未评估题目</button><button id="exportReportBtn" type="button" class="btn-secondary">导出 JSON 报告</button><button id="printReportBtn" type="button" class="btn-secondary">打印 / 保存 PDF</button></div>
+            <div id="reportRetentionNotice" class="incomplete-warning" role="status" hidden></div>
             <div id="resultsContainer"></div>
             <div class="disclaimer-note"><i class="fas fa-exclamation-triangle"></i> AI 批改仅供参考；“疑似正确”和“未评估”请人工复核。最终成绩以官方结果为准。</div>
         </section>
     </main>
 
+    <p class="print-empty-state">尚未生成批改报告。请先完成批改，再打印或保存 PDF。</p>
+
     <footer class="site-footer"><p>纯前端开源项目 · API 密钥会发送给你配置的 AI 服务商；默认只保存在当前标签页会话中，不会发送给本项目作者。</p></footer>
 
     <div id="settingsModal" class="modal-backdrop" style="display:none">
-        <div class="modal-content glass-panel">
-            <h3><i class="fas fa-gear"></i> API 接口配置</h3>
+        <div class="modal-content glass-panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+            <h3 id="settingsTitle"><i class="fas fa-gear"></i> API 接口配置</h3>
             <p class="modal-desc">接口需支持 Chat Completions、JSON Mode、Base64 Data URL 图片输入。密钥会直接发送给该服务商；本项目没有自有后端。</p>
             <div class="line-config" data-line="line1">
                 <h4>线路 1（默认，需支持视觉）</h4>
-                <div class="form-group"><label>显示名称</label><input type="text" data-field="label" placeholder="默认线路"></div>
-                <div class="form-group"><label>API Base URL</label><input type="url" data-field="baseUrl" placeholder="https://api.openai.com/v1"></div>
-                <div class="form-group"><label>API Key</label><input type="password" data-field="apiKey" autocomplete="off" placeholder="sk-..."></div>
-                <div class="form-group"><label>模型名称</label><input type="text" data-field="model" placeholder="gpt-4o"></div>
+                <div class="form-group"><label for="cfg-line1-label">显示名称</label><input id="cfg-line1-label" type="text" data-field="label" placeholder="默认线路"></div>
+                <div class="form-group"><label for="cfg-line1-baseUrl">API Base URL</label><input id="cfg-line1-baseUrl" type="url" data-field="baseUrl" placeholder="https://api.openai.com/v1"></div>
+                <div class="form-group"><label for="cfg-line1-apiKey">API Key</label><input id="cfg-line1-apiKey" type="password" data-field="apiKey" autocomplete="off" placeholder="sk-..."></div>
+                <div class="form-group"><label for="cfg-line1-model">模型名称</label><input id="cfg-line1-model" type="text" data-field="model" placeholder="gpt-6.1-sol"></div>
             </div>
             <div class="line-config" data-line="line2">
                 <h4>线路 2（备用，需支持视觉）</h4>
-                <div class="form-group"><label>显示名称</label><input type="text" data-field="label" placeholder="备用线路"></div>
-                <div class="form-group"><label>API Base URL</label><input type="url" data-field="baseUrl" placeholder="https://..."></div>
-                <div class="form-group"><label>API Key</label><input type="password" data-field="apiKey" autocomplete="off" placeholder="sk-..."></div>
-                <div class="form-group"><label>模型名称</label><input type="text" data-field="model" placeholder="vision-model"></div>
+                <div class="form-group"><label for="cfg-line2-label">显示名称</label><input id="cfg-line2-label" type="text" data-field="label" placeholder="备用线路"></div>
+                <div class="form-group"><label for="cfg-line2-baseUrl">API Base URL</label><input id="cfg-line2-baseUrl" type="url" data-field="baseUrl" placeholder="https://..."></div>
+                <div class="form-group"><label for="cfg-line2-apiKey">API Key</label><input id="cfg-line2-apiKey" type="password" data-field="apiKey" autocomplete="off" placeholder="sk-..."></div>
+                <div class="form-group"><label for="cfg-line2-model">模型名称</label><input id="cfg-line2-model" type="text" data-field="model" placeholder="vision-model"></div>
             </div>
             <div class="line-config" data-line="deepseek">
                 <h4>DeepSeek（仅纯文本 MS 解析，可留空）</h4>
-                <div class="form-group"><label>API Base URL</label><input type="url" data-field="baseUrl" placeholder="https://api.deepseek.com/v1"></div>
-                <div class="form-group"><label>API Key</label><input type="password" data-field="apiKey" autocomplete="off" placeholder="sk-..."></div>
-                <div class="form-group"><label>模型名称</label><input type="text" data-field="model" placeholder="deepseek-chat"></div>
+                <div class="form-group"><label for="cfg-deepseek-baseUrl">API Base URL</label><input id="cfg-deepseek-baseUrl" type="url" data-field="baseUrl" placeholder="https://api.deepseek.com/v1"></div>
+                <div class="form-group"><label for="cfg-deepseek-apiKey">API Key</label><input id="cfg-deepseek-apiKey" type="password" data-field="apiKey" autocomplete="off" placeholder="sk-..."></div>
+                <div class="form-group"><label for="cfg-deepseek-model">模型名称</label><input id="cfg-deepseek-model" type="text" data-field="model" placeholder="deepseek-chat"></div>
             </div>
-            <div class="form-group"><label>PDF 下载代理 URL（可选）</label><input type="url" id="cfg-proxyUrl" placeholder="https://your-domain/proxy.php?url="><small class="field-hint">程序会在末尾追加编码后的目标 URL。</small></div>
-            <label class="checkbox-label secret-storage-choice"><input type="checkbox" id="cfgRememberKeys"><span><strong>跨会话记住 API Key</strong><br><small>不勾选时仅写入 sessionStorage，关闭标签页后清除。勾选后才写入 localStorage；同源脚本仍可能读取。</small></span></label>
-            <div class="modal-actions"><button class="btn-secondary" id="cfgCancelBtn" type="button">取消</button><button class="btn-primary" id="cfgSaveBtn" type="button">保存配置</button></div>
+            <div class="form-group"><label for="cfg-proxyUrl">PDF 下载代理 URL（可选）</label><input type="url" id="cfg-proxyUrl" placeholder="https://your-domain/proxy.php?url="><small class="field-hint">程序会在末尾追加编码后的目标 URL。</small></div>
+            <label class="checkbox-label secret-storage-choice"><input type="checkbox" id="cfgRememberKeys"><span><strong>跨会话记住 API Key 与代理 URL</strong><br><small>不勾选时仅写入 sessionStorage，关闭标签页后清除。勾选后才写入 localStorage；同源脚本仍可能读取。</small></span></label>
+            <div class="modal-actions"><button class="btn-secondary" id="cfgClearBtn" type="button">清除密钥</button><button class="btn-secondary" id="cfgCancelBtn" type="button">取消</button><button class="btn-primary" id="cfgSaveBtn" type="button">保存配置</button></div>
         </div>
     </div>
 
     <script src="js/core.js"></script>
     <script src="js/config.js"></script>
-    <script src="js/app.js"></script>
+    <script type="module" src="js/bootstrap.js"></script>
 </body>
 </html>

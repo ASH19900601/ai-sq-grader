@@ -1,0 +1,15 @@
+{
+  "browser": "Chromium",
+  "checks": [
+    "all configuration inputs have associated labels and accessible names",
+    "settings modal prevents background scroll from leaking at its boundaries",
+    "manual PDF keyboard focus is visibly indicated",
+    "printing before grading does not fabricate an empty report",
+    "reduced-motion preference disables progress animation",
+    "long OCR fragments and point IDs wrap without clipping",
+    "answer previews preserve the complete image rather than cropping",
+    "320px viewport has no horizontal overflow",
+    "missing PDF module shows a recoverable error and reload successfully recovers",
+    "JavaScript-disabled browser receives an explicit explanation"
+  ]
+}

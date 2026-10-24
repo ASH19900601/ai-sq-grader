@@ -60,7 +60,7 @@ button, input, select { font: inherit; }
 .btn-upload:hover { background: var(--eg-primary); color: #fff; }
 .upload-info { margin-top: 1rem; padding: .8rem 1.2rem; border: 1px solid rgba(0,184,148,.3); border-radius: 10px; background: rgba(0,184,148,.1); color: #007d65; font-size: .9rem; }
 .img-preview-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(100px,1fr)); gap: .8rem; margin-top: 1rem; }
-.img-preview-grid img { width: 100%; aspect-ratio: 3/4; object-fit: cover; border: 2px solid rgba(232,67,147,.2); border-radius: 8px; }
+.img-preview-grid img { width: 100%; aspect-ratio: 3/4; object-fit: contain; background: #fff; border: 2px solid rgba(232,67,147,.2); border-radius: 8px; }
 .form-submit { display: flex; justify-content: center; gap: .8rem; }
 .btn-generate { padding: .9rem 2.5rem; border: 0; border-radius: 999px; background: linear-gradient(135deg,var(--eg-primary),var(--eg-accent)); box-shadow: 0 4px 20px var(--eg-primary-glow); color: #fff; font-weight: 700; cursor: pointer; }
 .btn-generate:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 30px var(--eg-primary-glow); }
@@ -114,3 +114,39 @@ button, input, select { font: inherit; }
     .score-summary { justify-content: space-between; } .score-box { flex: 1; min-width: 0; padding: .6rem .4rem; }
     .mark-point-row { grid-template-columns: 1fr; } .mp-status { align-items: flex-start; }
 }
+
+.report-actions { display:flex; flex-wrap:wrap; gap:.6rem; margin:1rem 0; }
+button:focus-visible, a:focus-visible, input:focus-visible { outline:3px solid #6c5ce7; outline-offset:3px; }
+@media (max-width: 420px) { .paper-files-grid, .paper-form .form-row { grid-template-columns:1fr; } .dropzone { padding:1.2rem; } .question-header { padding:1rem; flex-wrap:wrap; } }
+@media print {
+    body { background:white; color:black; }
+    .site-header, .intro, .pipeline-bar, #configBanner, #sectionSelect, #sectionPaperFiles, #sectionUpload, #sectionProgress, .report-actions, .site-footer, #settingsModal { display:none !important; }
+    .page { max-width:none; padding:0; }
+    #sectionResults { display:block !important; border:0; box-shadow:none; padding:0; }
+    .question-body[hidden] { display:block; }
+    .question-card { break-inside:avoid; box-shadow:none; }
+}
+
+/* Long OCR fragments and point IDs must wrap inside report columns rather than clip. */
+.mark-point-row > *, .question-header > *, .paper-upload-row, .form-group { min-width: 0; }
+.student-answer-box, .mp-description, .mp-reason, .question-title, .question-score, .upload-info { overflow-wrap: anywhere; }
+.paper-upload-row:focus-within .paper-upload-label { outline: 3px solid #6c5ce7; outline-offset: 3px; }
+.startup-status { margin: 1rem auto; padding: 1rem; max-width: 900px; color: #713d00; background: #fff4d5; border: 1px solid #d99d00; border-radius: 10px; }
+.startup-status[hidden], .print-empty-state { display: none; }
+.startup-status button { margin: .5rem; }
+.start-hint { margin: .75rem 0 0; color: var(--text-muted); font-size: .9rem; text-align: center; }
+.grader-card { scroll-margin-top: 6rem; }
+.progress-log:focus-visible { outline: 3px solid #6c5ce7; outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+    button:hover { transform: none !important; }
+}
+@media print {
+    #startupStatus, noscript, .start-hint { display: none !important; }
+    #sectionResults[style*="display: none"], #sectionResults[style*="display:none"] { display: none !important; }
+    body:has(#sectionResults[style*="display: none"], #sectionResults[style*="display:none"]) .print-empty-state { display: block; }
+}
+/* A tall settings dialog must not scroll the page behind it at its boundaries. */
+body:has(#settingsModal[style*="display: flex"]) { overflow: hidden; }
+.modal-content { overscroll-behavior: contain; }
+.modal-actions { flex-wrap: wrap; }

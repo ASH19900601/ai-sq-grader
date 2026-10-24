@@ -1,0 +1,4 @@
+
+> ai-sq-grader@2.3.0 check
+> node --check js/core.js && node --check js/config.js && node --check js/app.js && node --check js/bootstrap.js
+

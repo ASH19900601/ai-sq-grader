@@ -18,6 +18,7 @@ function appContext(page) {
         SQCore,
         AppConfig: {},
         document: {
+            readyState: 'loading',
             addEventListener() {},
             getElementById() { return null; },
             querySelectorAll() { return []; },
@@ -65,7 +66,7 @@ test('actual PDF pipeline still removes a clearly labelled text-only blank page'
 test('HTML uses bundled scripts, includes QP upload and has no inline onclick handlers', () => {
     const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
     assert.match(html, /id="manualQpInput"/);
-    assert.match(html, /vendor\/pdfjs\/pdf\.min\.js/);
+    assert.match(html, /js\/bootstrap\.js/);
     assert.match(html, /Content-Security-Policy/);
     assert.doesNotMatch(html, /<script[^>]+https?:\/\//i);
     assert.doesNotMatch(html, /onclick=/i);
@@ -73,7 +74,7 @@ test('HTML uses bundled scripts, includes QP upload and has no inline onclick ha
 
 test('all locally referenced vendor assets exist', () => {
     for (const file of [
-        'vendor/pdfjs/pdf.min.js', 'vendor/pdfjs/pdf.worker.min.js',
+        'vendor/pdfjs/pdf.min.mjs', 'vendor/pdfjs/pdf.worker.min.mjs',
         'vendor/fontawesome/css/all.min.css', 'vendor/fontawesome/webfonts/fa-solid-900.woff2'
     ]) assert.equal(fs.existsSync(path.join(root, file)), true, file);
 });
@@ -86,4 +87,27 @@ test('proxy example revalidates redirects and omits wildcard CORS/followlocation
     assert.match(php, /SQ_PROXY_RATE_LIMIT/);
     assert.doesNotMatch(php, /Access-Control-Allow-Origin:\s*\*/);
     assert.doesNotMatch(php, /CURLOPT_FOLLOWLOCATION\s*=>\s*true/);
+});
+
+test('question 1 never accidentally matches question 10', () => {
+    const context = appContext(mockPage('', []));
+    const found = context.contextForQuestion('1', { '10': { question_text: 'wrong', source_pages:[1] }, '1(a)':{ question_text:'right', source_pages:[0] } });
+    assert.equal(found.question_text, 'right');
+});
+test('text-mode QP retains its original rendered page for final vision grading', async () => {
+    const context = appContext(mockPage('Complete question paper text '.repeat(5), []));
+    const pages = await context.pdfToHybrid(new ArrayBuffer(10));
+    assert.equal(pages[0].type,'text');
+    assert.equal(pages[0].imageContent, 'data:image/jpeg;base64,scan');
+});
+test('PDF.js receives an isolated buffer and evaluation is disabled', async () => {
+    const context = appContext(mockPage('', []));
+    const buffer = new ArrayBuffer(10);
+    context.pdfjsLib.getDocument = options => {
+        assert.notEqual(options.data, buffer);
+        assert.equal(options.isEvalSupported,false);
+        return { promise:Promise.resolve({ numPages:0, destroy:async () => {} }) };
+    };
+    await context.pdfToHybrid(buffer);
+    assert.equal(buffer.byteLength,10);
 });

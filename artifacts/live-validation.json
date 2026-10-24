@@ -1,0 +1,10 @@
+{
+  "model": "gpt-6.1-sol",
+  "requests": 4,
+  "fixture": "Synthetic physics force question with one B1 mark; correct answer 6 N.",
+  "score": 1,
+  "max": 1,
+  "rate": "100%",
+  "transport": "Real Chromium UI and PDF.js; API POST bridged through Node environment egress proxy. Browser-to-provider CORS not established by bridge.",
+  "log": "[5:10:28 AM]   ✅ 使用手动上传的 MS[5:10:28 AM]   ✅ 使用手动上传的 QP[5:10:28 AM]   🖼️ MS 第 1 页保留为图像（扫描/图表/复杂版式）[5:10:28 AM]   🖼️ QP 第 1 页保留为图像（扫描/图表/复杂版式）[5:10:28 AM] 📄 正在限流解析 Mark Scheme...[5:11:35 AM]   ✅ MS 保留页 1-1 解析完成[5:11:35 AM] 📘 正在限流解析 Question Paper 题干...[5:11:57 AM]   ✅ QP 第 1 页解析完成[5:11:57 AM] ✍️ 正在限流识别答卷...[5:12:03 AM]   ✅ 答卷第 1 页识别完成[5:12:03 AM] 🤖 AI 正在限流逐题判分，并直接查看题干与答卷原图..."
+}

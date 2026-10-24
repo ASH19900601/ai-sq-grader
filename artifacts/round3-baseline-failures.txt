@@ -1,0 +1,154 @@
+Historical 2.2 baseline: these expected failures were captured before fixes; not final test outcomes.
+
+✖ R3 OCR cannot redirect a genuine page fragment to model-supplied source pages (18.574324ms)
+✖ R3 final grading retains continuation images indexed under parent and child questions (2.125786ms)
+✖ R3 harmless padded result IDs are normalized before lookup (2.055009ms)
+✖ R3 colliding padded IDs cannot overwrite contradictory assessment rows (1.218231ms)
+✖ R3 failed full regrading retains the last report and the matching parsed inputs (1.728329ms)
+✖ R3 selecting DeepSeek without usable credentials stops before using a paid vision fallback (1.806916ms)
+✖ R3 synchronous PDF rendering errors still release allocated canvas memory (1.384631ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 0
+ℹ fail 7
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 93.825435
+
+✖ failing tests:
+
+test at tests/round3.test.js:4:1
+✖ R3 OCR cannot redirect a genuine page fragment to model-supplied source pages (18.574324ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    [
+  +   1
+  -   0
+    ]
+  
+      at TestContext.<anonymous> (./tests/round3.test.js:7:9)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [ 1 ],
+    expected: [ 0 ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at tests/round3.test.js:9:1
+✖ R3 final grading retains continuation images indexed under parent and child questions (2.125786ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /F = ma/. Input:
+  
+  '你是严格的 CAIE Physics 评卷官。请依据题干、原始答卷图像和结构化 MS 逐点评估证据。\n' +
+    '\n' +
+    '【题号】1(a)(i)\n' +
+    '【QP 题干】（未提取到文字，请查看随附QP原图）\n' +
+    '【OCR 转录（只作索引，原图优先）】= 6 N\n' +
+    '【MS 规则】{\n' +
+    '  "general_rules": [],\n' +
+    '  "mark_points": [\n' +
+    '    {\n' +
+    '      "point_id": "B1",\n' +
+    '      "description": "6 N",\n' +
+    '      "marks": 1\n' +
+    '    }\n' +
+    '  ]\n' +
+    '}\n' +
+    '\n' +
+    '逐个 point_id 返回：明确正确、疑似正确、错误、MS之外。只判断该点的证据是否满足；依赖分与组上限由程序确定执行。FT、SC、not from wrong working、ignore subsequent working 等仍须按 rule_notes 判断。理由不超过25字。\n' +
+    '严格返回 JSON：{"results":[{"point_id":"...","status":"明确正确|疑似正确|错误|MS之外","reason":"..."}]}'
+  
+      at TestContext.<anonymous> (./tests/round3.test.js:16:9)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '你是严格的 CAIE Physics 评卷官。请依据题干、原始答卷图像和结构化 MS 逐点评估证据。\n\n【题号】1(a)(i)\n【QP 题干】（未提取到文字，请查看随附QP原图）\n【OCR 转录（只作索引，原图优先）】= 6 N\n【MS 规则】{\n  "general_rules": [],\n  "mark_points": [\n    {\n      "point_id": "B1",\n      "description": "6 N",\n      "marks": 1\n    }\n  ]\n}\n\n逐个 point_id 返回：明确正确、疑似正确、错误、MS之外。只判断该点的证据是否满足；依赖分与组上限由程序确定执行。FT、SC、not from wrong working、ignore subsequent working 等仍须按 rule_notes 判断。理由不超过25字。\n严格返回 JSON：{"results":[{"point_id":"...","status":"明确正确|疑似正确|错误|MS之外","reason":"..."}]}',
+    expected: /F = ma/,
+    operator: 'match',
+    diff: 'simple'
+  }
+
+test at tests/round3.test.js:19:1
+✖ R3 harmless padded result IDs are normalized before lookup (2.055009ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  '未评估' !== '明确正确'
+  
+      at TestContext.<anonymous> (./tests/round3.test.js:23:9)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '未评估',
+    expected: '明确正确',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests/round3.test.js:25:1
+✖ R3 colliding padded IDs cannot overwrite contradictory assessment rows (1.218231ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  true !== false
+  
+      at TestContext.<anonymous> (./tests/round3.test.js:29:9)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: true,
+    expected: false,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at tests/round3.test.js:31:1
+✖ R3 failed full regrading retains the last report and the matching parsed inputs (1.728329ms)
+  evalmachine.<anonymous>:1
+  state.results[0].q_num
+               ^
+  
+  TypeError: Cannot read properties of null (reading '0')
+      at evalmachine.<anonymous>:1:14
+      at Script.runInContext (node:vm:149:12)
+      at Object.runInContext (node:vm:301:6)
+      at Object.run (./tests/helpers/app-harness.cjs:19:39)
+      at TestContext.<anonymous> (./tests/round3.test.js:33:54)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+
+test at tests/round3.test.js:35:1
+✖ R3 selecting DeepSeek without usable credentials stops before using a paid vision fallback (1.806916ms)
+  AssertionError [ERR_ASSERTION]: Missing expected rejection.
+      at async TestContext.<anonymous> (./tests/round3.test.js:37:2)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: /DeepSeek.*配置/,
+    operator: 'rejects',
+    diff: 'simple'
+  }
+
+test at tests/round3.test.js:39:1
+✖ R3 synchronous PDF rendering errors still release allocated canvas memory (1.384631ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  100 !== 0
+  
+      at TestContext.<anonymous> (./tests/round3.test.js:42:9)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 100,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

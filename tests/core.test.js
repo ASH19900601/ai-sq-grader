@@ -25,22 +25,18 @@ test('safeParseJSON parses standard and fenced JSON', () => {
     assert.equal(SQCore.safeParseJSON('```json\n{"answers":[{"q_num":"1","answer_text":"x"}]}\n```').answers[0].answer_text, 'x');
 });
 
-test('truncated answers are rescued as answers, not questions', () => {
-    const parsed = SQCore.safeParseJSON('{"answers":[{"q_num":"1","answer_text":"x"},{"q_num":"2","answer_text":"y"}');
-    assert.deepEqual(parsed.answers.map(answer => answer.q_num), ['1', '2']);
-    assert.equal(parsed.questions, undefined);
+test('truncated arrays are rejected instead of silently dropping questions', () => {
+    for (const text of ['{"answers":[{"q_num":"1","answer_text":"x"}', '{"questions":[{"q_num":"1","total_marks":1,"mark_points":[]}', '{"results":[{"point_id":"p1","status":"错误"}']) {
+        assert.throws(() => SQCore.safeParseJSON(text), /不完整/);
+    }
 });
-
-test('truncated question and result arrays are rescued', () => {
-    const questions = SQCore.safeParseJSON('{"questions":[{"q_num":"1","total_marks":1,"mark_points":[]},{"q_num":"2","total_marks":2,"mark_points":[]}');
-    assert.equal(questions.questions.length, 2);
-    const results = SQCore.safeParseJSON('{"results":[{"point_id":"p1","status":"错误"},{"point_id":"p2","status":"明确正确"}');
-    assert.equal(results.results.length, 2);
+test('token-limit output is rejected even when syntactically valid', () => {
+    assert.throws(() => SQCore.safeParseJSON('{"questions":[]}', { choices: [{ finish_reason: 'length' }] }), /截断/);
 });
 
 test('irrecoverable model output reports an error', () => {
     assert.throws(() => SQCore.safeParseJSON('', { choices: [{ message: { reasoning_content: '...' } }] }, 'DeepSeek'), /思考超时/);
-    assert.throws(() => SQCore.safeParseJSON('not json'), /无法解析/);
+    assert.throws(() => SQCore.safeParseJSON('not json'), /不完整或无效/);
 });
 
 test('mergeQuestions deduplicates IDs and preserves complex rules', () => {
@@ -111,4 +107,44 @@ test('retry helpers parse delays and statuses', () => {
     assert.equal(SQCore.parseRetryAfter('2'), 2000);
     assert.equal(SQCore.isRetryableStatus(429), true);
     assert.equal(SQCore.isRetryableStatus(400), false);
+});
+
+test('per-point awards sum to the capped total', () => {
+    const score = SQCore.scoreQuestion({ total_marks: 1, point_results: [{ point_id: 'a', status: '明确正确' }, { point_id: 'b', status: '明确正确' }] });
+    assert.equal(Object.values(score.awards).reduce((a,b) => a+b,0), score.got);
+});
+test('group cap applies even when a later member omits its cap', () => {
+    const score = SQCore.scoreQuestion({ total_marks: 4, point_results: [{ point_id: 'a', group_id: 'g', group_max: 1, status: '明确正确' }, { point_id: 'b', group_id: 'g', status: '明确正确' }] });
+    assert.equal(score.got, 1);
+});
+test('alternative routes cannot combine to award extra marks', () => {
+    const score = SQCore.scoreQuestion({ total_marks: 4, point_results: [{ point_id: 'a', route_id: 'r1', marks: 2, status: '明确正确' }, { point_id: 'b', route_id: 'r2', marks: 3, status: '明确正确' }] });
+    assert.equal(score.got, 3);
+});
+test('possible marks respect dependencies and group caps', () => {
+    const score = SQCore.scoreQuestion({ total_marks: 4, point_results: [{ point_id: 'a', status: '错误' }, { point_id: 'b', depends_on: ['a'], status: '疑似正确' }] });
+    assert.equal(score.possible, 0);
+});
+test('empty point lists do not claim a complete assessment', () => {
+    assert.equal(SQCore.scoreQuestion({ total_marks: 2, point_results: [] }).incomplete, true);
+});
+test('untrusted question identifiers cannot mutate dictionary prototypes', () => {
+    const answers = SQCore.mergeAnswers([{ q_num: '__proto__', answer_text: 'x' }]);
+    assert.equal(answers.__proto__.answer_text, 'x');
+    assert.equal({}.answer_text, undefined);
+    assert.equal(SQCore.questionId(' １（a） (i) '), '1(a)(i)');
+});
+test('vector diagrams and generic marking rules are retained', () => {
+    assert.equal(SQCore.classifyPdfPage({ text: 'text '.repeat(30), hasVectors: true }).mode, 'image');
+    assert.equal(SQCore.classifyPdfPage({ text: 'GENERIC MARKING PRINCIPLES', isMs: true }).skip, false);
+});
+test('malformed MS fields and cyclic dependencies are rejected', () => {
+    assert.throws(() => SQCore.validateRows([{ q_num: '1', total_marks: Infinity, mark_points: [] }], 'questions'), /MS/);
+    const q = SQCore.mergeQuestions([{ q_num: '1', total_marks: 2, mark_points: [{ point_id: 'a', depends_on: ['b'] }, { point_id: 'b', depends_on: ['a'] }] }]);
+    assert.throws(() => SQCore.validateMarkScheme(q), /循环依赖/);
+});
+test('pool stops scheduling new work after a worker fails', async () => {
+    const seen = [];
+    await assert.rejects(SQCore.mapWithConcurrency([1,2,3], 1, async x => { seen.push(x); throw new Error('failed'); }), /failed/);
+    assert.deepEqual(seen, [1]);
 });

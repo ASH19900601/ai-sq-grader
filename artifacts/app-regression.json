@@ -1,0 +1,16 @@
+{
+  "checks": [
+    "pre-confirmation stale upload",
+    "missing-paper preflight",
+    "same-file retry after rejection",
+    "keyboard upload tabs",
+    "valid empty OCR proceeds using originals",
+    "blank answer yields complete 0%",
+    "accessible report disclosure",
+    "stable export assessment time",
+    "forget credentials disables grading",
+    "parsing failure preserves actual cause",
+    "no page errors"
+  ],
+  "requests": 6
+}

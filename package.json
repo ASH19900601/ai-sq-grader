@@ -1,10 +1,24 @@
 {
   "name": "ai-sq-grader",
-  "version": "2.0.0",
+  "version": "2.3.0",
   "description": "结合 QP、原始图像与复杂 MS 规则的结构题 AI 批改器",
   "scripts": {
     "test": "node --test",
-    "check": "node --check js/core.js && node --check js/config.js && node --check js/app.js"
+    "check": "node --check js/core.js && node --check js/config.js && node --check js/app.js && node --check js/bootstrap.js",
+    "test:browser": "node tools/browser-smoke.cjs",
+    "test:proxy": "node tools/proxy-smoke.cjs",
+    "test:api": "node tools/probe-api.cjs",
+    "test:live": "node tools/live-pipeline.cjs",
+    "test:ui": "node tools/ui-regression.cjs",
+    "test:regression": "node tools/app-regression.cjs",
+    "test:all": "npm test && npm run check && npm run test:browser && npm run test:regression && npm run test:ui && npm run test:round3",
+    "test:round3": "node tools/round3-browser.cjs"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "playwright": "1.58.2"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
 }
